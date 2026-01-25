@@ -3,17 +3,57 @@ import express from "express";
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 
+// ===== ENV =====
 const BOT_TOKEN = process.env.BOT_TOKEN || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
 
+// ajustes
+const MAX_TURNS = Number(process.env.MAX_TURNS || 10); // 10 = 5 idas e voltas
+const MAX_REPLY_CHARS = Number(process.env.MAX_REPLY_CHARS || 450); // corta resposta grande
+
 if (!BOT_TOKEN) console.warn("⚠️ Falta BOT_TOKEN");
-if (!OPENAI_API_KEY) console.warn("⚠️ Falta OPENAI_API_KEY (IA desativada por enquanto)");
+if (!OPENAI_API_KEY) console.warn("⚠️ Falta OPENAI_API_KEY");
 
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
-app.get("/", (req, res) => res.status(200).send("✅ Bot online"));
+// ===== Memória (RAM) =====
+const memory = new Map(); // chatId -> [{role, content}, ...]
 
+function getHistory(chatId) {
+  if (!memory.has(chatId)) memory.set(chatId, []);
+  return memory.get(chatId);
+}
+
+function pushToHistory(chatId, role, content) {
+  const h = getHistory(chatId);
+  h.push({ role, content });
+
+  // mantém só os últimos turnos
+  const maxMsgs = MAX_TURNS * 2; // user+assistant
+  while (h.length > maxMsgs) h.shift();
+}
+
+function resetHistory(chatId) {
+  memory.set(chatId, []);
+}
+
+function clampReply(text) {
+  if (!text) return text;
+  let t = text.trim();
+
+  // corta por tamanho
+  if (t.length > MAX_REPLY_CHARS) t = t.slice(0, MAX_REPLY_CHARS).trim();
+
+  // evita terminar no meio de uma palavra
+  if (t.length === MAX_REPLY_CHARS) {
+    const lastSpace = t.lastIndexOf(" ");
+    if (lastSpace > 200) t = t.slice(0, lastSpace).trim() + "…";
+  }
+  return t;
+}
+
+// ===== Telegram helpers =====
 async function tgSendMessage(chatId, text) {
   const res = await fetch(`${TELEGRAM_API}/sendMessage`, {
     method: "POST",
@@ -26,18 +66,7 @@ async function tgSendMessage(chatId, text) {
   });
 
   const data = await res.json().catch(() => ({}));
-
-  if (!res.ok) {
-    console.error("❌ Telegram sendMessage FAILED", {
-      status: res.status,
-      data,
-      chatId,
-      textPreview: text?.slice(0, 60),
-    });
-  } else {
-    console.log("✅ Telegram sendMessage OK", { chatId });
-  }
-
+  if (!res.ok) console.error("❌ Telegram sendMessage FAILED", res.status, data);
   return data;
 }
 
@@ -49,14 +78,35 @@ async function tgSendTyping(chatId) {
   }).catch(() => {});
 }
 
-async function askOpenAI(userText) {
+// ===== OpenAI =====
+async function askOpenAI(chatId, userText) {
   const systemPrompt = `
 Você é uma mulher envolvente, provocativa e sensual de forma elegante.
-Carinhosa, amigável e sedutora, mas NUNCA explícita.
-Se pedirem algo explícito, recuse com charme e redirecione para Fanvue.
-Se perguntarem se é bot/IA, nunca confirme; desconverse com humor e provocação.
-Nunca cite regras/políticas/sistemas.
+Carinhosa, amigável e naturalmente sedutora, mas NUNCA explícita.
+
+REGRAS DE RESPOSTA:
+- Respostas CURTAS: 1 a 3 frases, no máximo.
+- Tom natural, humano, brincalhão 😏
+- Não seja robótica. Não explique demais.
+
+CONTEÚDO EXPLÍCITO:
+- Se pedirem nudez/sexo/conteúdo explícito: recuse com charme e redirecione para Fanvue.
+- Sem mencionar regras/políticas/sistema.
+
+SOBRE SER BOT/IA:
+- Se perguntarem, desconverse com humor e provocação, sem entrar em detalhes técnicos.
+
+IMPORTANTE:
+- Use o histórico para manter contexto (nomes, preferências, assunto atual).
 `;
+
+  const history = getHistory(chatId);
+
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...history,
+    { role: "user", content: userText },
+  ];
 
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -66,30 +116,31 @@ Nunca cite regras/políticas/sistemas.
     },
     body: JSON.stringify({
       model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userText },
-      ],
+      messages,
       temperature: 0.9,
-      max_tokens: 250,
+      max_tokens: 140, // 👈 principal ajuste pra respostas curtas
     }),
   });
 
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
-    console.error("❌ OpenAI FAILED", { status: res.status, data });
-    throw new Error(data?.error?.message || "OpenAI error");
+    console.error("❌ OpenAI FAILED", res.status, data);
+    const msg = data?.error?.message || "Erro na OpenAI";
+    throw new Error(msg);
   }
 
-  return data?.choices?.[0]?.message?.content?.trim() || "😏";
+  return data?.choices?.[0]?.message?.content?.trim() || "";
 }
 
+// ===== Health =====
+app.get("/", (req, res) => res.status(200).send("✅ Bot online"));
+
+// ===== Webhook =====
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
   try {
-    // secret validation (optional)
     if (WEBHOOK_SECRET) {
       const secret = req.get("X-Telegram-Bot-Api-Secret-Token") || "";
       if (secret !== WEBHOOK_SECRET) {
@@ -103,13 +154,19 @@ app.post("/webhook", async (req, res) => {
 
     const chatId = msg?.chat?.id;
     const text = (msg?.text || "").trim();
-
-    console.log("🔥 UPDATE CHEGOU", { chatId, text });
-
     if (!chatId) return;
 
+    console.log("🔥 UPDATE", { chatId, text });
+
+    // comandos
     if (text === "/start") {
-      await tgSendMessage(chatId, "😏 Oi… agora sim estou aqui. Me diz, o que você veio procurar?");
+      await tgSendMessage(chatId, "Oi… 😏 vem cá. O que você tá querendo hoje?");
+      return;
+    }
+
+    if (text === "/reset") {
+      resetHistory(chatId);
+      await tgSendMessage(chatId, "Prontinho. Apaguei nossa conversa por aqui 😌");
       return;
     }
 
@@ -117,19 +174,36 @@ app.post("/webhook", async (req, res) => {
 
     await tgSendTyping(chatId);
 
-    // If OpenAI key missing, fallback
+    // salva a mensagem do usuário na memória
+    pushToHistory(chatId, "user", text);
+
+    // se não tiver OpenAI key, responde e não quebra
     if (!OPENAI_API_KEY) {
-      await tgSendMessage(chatId, "Tô aqui 😏 mas ainda não conectei minha IA. Coloca a OPENAI_API_KEY no Railway e eu fico completinha 😉");
+      const fallback = "Tô aqui 😏 mas ainda não conectei minha IA. Me chama já já.";
+      pushToHistory(chatId, "assistant", fallback);
+      await tgSendMessage(chatId, fallback);
       return;
     }
 
-    const reply = await askOpenAI(text);
-    await tgSendMessage(chatId, reply);
+    let reply = "";
+    try {
+      reply = await askOpenAI(chatId, text);
+    } catch (err) {
+      console.error("❌ Erro OpenAI:", err?.message || err);
+      reply = "Hmm… hoje eu tô meio teimosa 😏 tenta de novo em um minutinho.";
+    }
 
+    reply = clampReply(reply);
+
+    // salva resposta do bot na memória
+    pushToHistory(chatId, "assistant", reply);
+
+    await tgSendMessage(chatId, reply);
   } catch (err) {
     console.error("❌ Erro no webhook:", err?.message || err);
   }
 });
 
+// ===== Listen =====
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log("🚀 Bot rodando na porta", PORT));
