@@ -37,35 +37,32 @@ async function askChatGPT(userMessage) {
 
 // webhook
 app.post("/webhook", async (req, res) => {
-  const message = req.body.message;
-  if (!message) return res.sendStatus(200);
+  res.sendStatus(200); // responde IMEDIATO pro Telegram
 
-  const chatId = message.chat.id;
-  const text = message.text || "";
+  try {
+    const message = req.body.message;
+    if (!message) return;
 
- let reply;
+    const chatId = message.chat.id;
+    const text = message.text || "";
 
-if (text === "/start") {
-  reply = "Oi… então é você 😏\nA gente pode conversar um pouco… sem pressa.";
-} else {
-  reply = await askChatGPT(text);
-}
+    let reply = "Oi 🙂";
 
+    if (text === "/start") {
+      reply = "Oi! Agora estou funcionando certinho 🚀";
+    }
 
-  if (text === "/start") {
-    reply = "Oi… então é você 😌\nA gente pode conversar um pouco… sem pressa.";
+    await fetch(`${TELEGRAM_API}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: reply,
+      }),
+    });
+  } catch (err) {
+    console.error("Webhook error:", err);
   }
-
-  await fetch(`${TELEGRAM_API}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text: reply,
-    }),
-  });
-
-  res.sendStatus(200);
 });
 
 // rota raiz (importante!)
