@@ -147,12 +147,12 @@ app.post("/webhook", async (req, res) => {
   console.log("🔥 UPDATE:", chatId, text);
 
   if (text === "/start") {
-    await tgSendMessage(
-      chatId,
-      "Oi… 😏 agora sim estou aqui. Me diz… o que você veio procurar?"
-    );
-    return;
-  }
+  await tgSendMessage(
+    chatId,
+    "Oi amorzinho... 😊\n\nAntes de começar, um aviso rápido: isso aqui é papo adulto, safado e consensual só entre nós dois. Vai rolar flerte quente, provocação e tesão sem filtro, mas tudo no seu ritmo. Se não for +18 ou se não curtir esse clima, é só digitar /stop a qualquer momento e eu paro na hora, tá bom?\n\nSe você tá dentro e quer continuar... me diz o que tá passando nessa cabecinha fofa 😏"
+  );
+  return;
+}
 
   await tgTyping(chatId);
 
