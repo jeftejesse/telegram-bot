@@ -153,7 +153,14 @@ app.post("/webhook", async (req, res) => {
   );
   return;
 }
-
+if (text === "/stop") {
+  await tgSendMessage(
+    chatId,
+    "Tudo bem, docinho... 😊 Eu paro por aqui. Se quiser voltar algum dia, é só me chamar de novo. Beijo gostoso 💕"
+  );
+  memory.delete(chatId);
+  return;
+}
   await tgTyping(chatId);
 
   if (!XAI_API_KEY) {
