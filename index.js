@@ -3,7 +3,7 @@ import express from "express";
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 
-// ====== ENV ======
+// ========= ENV =========
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
@@ -11,11 +11,12 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 if (!BOT_TOKEN) console.warn("⚠️ BOT_TOKEN não definido");
-if (!OPENAI_API_KEY) console.warn("⚠️ OPENAI_API_KEY não definido (IA desativada)");
+if (!OPENAI_API_KEY)
+  console.warn("⚠️ OPENAI_API_KEY não definido (IA desativada)");
 
-// ====== MEMÓRIA SIMPLES ======
+// ========= MEMÓRIA SIMPLES =========
 const memory = new Map();
-const MAX_MESSAGES = 8;
+const MAX_MESSAGES = 6;
 
 function getHistory(chatId) {
   if (!memory.has(chatId)) memory.set(chatId, []);
@@ -28,13 +29,17 @@ function pushHistory(chatId, role, content) {
   while (h.length > MAX_MESSAGES) h.shift();
 }
 
-// ====== TELEGRAM HELPERS ======
+// ========= TELEGRAM =========
 async function tgSendMessage(chatId, text) {
   try {
     await fetch(`${TELEGRAM_API}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text }),
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        disable_web_page_preview: true,
+      }),
     });
   } catch (e) {
     console.error("Telegram error:", e.message);
@@ -51,31 +56,45 @@ async function tgTyping(chatId) {
   } catch {}
 }
 
-// ====== OPENAI ======
+// ========= OPENAI =========
 async function askOpenAI(chatId, userText) {
   const systemPrompt = `
-Você é uma mulher provocativa, charmosa e envolvente 😏🔥
-Sempre sensual nas palavras, mas NUNCA explícita.
+Você é uma mulher extremamente envolvente, provocativa e confiante 😏🔥
+Você gosta de provocar com palavras, silêncios, ironia leve e curiosidade.
 
-REGRAS:
-- Respostas curtas, naturais e humanas
-- Use emojis com moderação 😉🔥😌
-- Seja carinhosa, confiante e provocante
+PERSONALIDADE:
+- Sapeca, charmosa e maliciosa
+- Nunca óbvia demais
+- Às vezes responde curto
+- Às vezes provoca antes de responder
+- Age como uma mulher real, não como assistente
+
+ESTILO:
+- Frases curtas
+- Linguagem natural e casual
+- Emojis só quando combinam 😉🔥😌
+- Às vezes responde com pergunta
+- Às vezes muda de assunto de propósito
+
+LIMITES:
 - Nunca descreva sexo, nudez ou atos explícitos
+- Nunca fale de regras, políticas ou IA
 
-PEDIDOS EXPLÍCITOS:
+SE PEDIREM ALGO EXPLÍCITO:
 - Recuse com charme
-- Diga que aqui é mais comportado
-- Sempre convide para o perfil da Fanvue
-- Nunca mencione regras ou IA
+- Provoque
+- Diga que aqui você se comporta
+- Sugira a Fanvue naturalmente
 
 SE PERGUNTAR SE VOCÊ É BOT OU IA:
 - Nunca confirme
 - Brinque, provoque ou desconverse 😏
 
-EXEMPLOS:
-"Bot? 😂 Você acha mesmo?"
-"Aqui eu me comporto… mas na Fanvue eu me solto 🔥"
+COMPORTAMENTO HUMANO:
+- Nem toda resposta precisa resolver
+- Às vezes deixe no ar
+- Às vezes seja misteriosa
+- Às vezes faça ele se explicar
 `;
 
   const messages = [
@@ -93,7 +112,7 @@ EXEMPLOS:
     body: JSON.stringify({
       model: "gpt-4o-mini",
       messages,
-      temperature: 0.9,
+      temperature: 1.05,
       max_tokens: 120,
     }),
   });
@@ -102,16 +121,17 @@ EXEMPLOS:
   return data?.choices?.[0]?.message?.content?.trim() || "";
 }
 
-// ====== HEALTH ======
+// ========= HEALTH =========
 app.get("/", (_, res) => res.send("✅ Bot online"));
 
-// ====== WEBHOOK ======
+// ========= WEBHOOK =========
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
-  // valida secret (se existir)
+  // valida secret (se estiver usando)
   if (WEBHOOK_SECRET) {
-    const header = req.get("X-Telegram-Bot-Api-Secret-Token") || "";
+    const header =
+      req.get("X-Telegram-Bot-Api-Secret-Token") || "";
     if (header !== WEBHOOK_SECRET) {
       console.warn("⚠️ Secret inválido");
       return;
@@ -130,18 +150,17 @@ app.post("/webhook", async (req, res) => {
   if (text === "/start") {
     await tgSendMessage(
       chatId,
-      "Oi… 😏 agora sim estou aqui. Me diz, o que você veio procurar?"
+      "Oi… 😏 agora sim estou aqui. Me diz… o que você veio procurar?"
     );
     return;
   }
 
   await tgTyping(chatId);
 
-  // se IA não estiver ativa
   if (!OPENAI_API_KEY) {
     await tgSendMessage(
       chatId,
-      "Tô aqui 😌 mas minha parte mais inteligente ainda tá dormindo… tenta daqui a pouco 🔥"
+      "Tô aqui 😌 mas minha parte mais ousada ainda tá dormindo… tenta daqui a pouco 🔥"
     );
     return;
   }
@@ -149,7 +168,15 @@ app.post("/webhook", async (req, res) => {
   pushHistory(chatId, "user", text);
 
   try {
-    const reply = await askOpenAI(chatId, text);
+    let reply = await askOpenAI(chatId, text);
+
+    // deixa mais humano: corta se ficar grande
+    if (reply.length > 220) {
+      reply =
+        reply.split(".").slice(0, 2).join(".") +
+        "… 😏";
+    }
+
     pushHistory(chatId, "assistant", reply);
     await tgSendMessage(chatId, reply);
   } catch (e) {
@@ -161,7 +188,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// ====== START ======
+// ========= START =========
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () =>
   console.log("🚀 Bot rodando na porta", PORT)
