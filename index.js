@@ -1,5 +1,4 @@
 import express from "express";
-
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 
@@ -7,12 +6,10 @@ app.use(express.json({ limit: "2mb" }));
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const XAI_API_KEY = process.env.XAI_API_KEY || "";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
-
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 if (!BOT_TOKEN) console.warn("⚠️ BOT_TOKEN não definido");
-if (!XAI_API_KEY)
-  console.warn("⚠️ XAI_API_KEY não definido (IA desativada)");
+if (!XAI_API_KEY) console.warn("⚠️ XAI_API_KEY não definido (IA desativada)");
 
 // ========= MEMÓRIA SIMPLES =========
 const memory = new Map();
@@ -89,7 +86,7 @@ Se ele falar algo quente → devolva mais quente ainda.
 Se ele ficar tímido → provoca até ele se soltar.
 
 Agora vai… me deixa louca de tesão com o que tu vai falar 😏
-`;
+  `;
 
   const messages = [
     { role: "system", content: systemPrompt },
@@ -109,8 +106,7 @@ Agora vai… me deixa louca de tesão com o que tu vai falar 😏
       temperature: 1.05,
       top_p: 0.95,
       max_tokens: 120,
-      presence_penalty: 0.6,
-      frequency_penalty: 0.4,
+      // REMOVIDO: presence_penalty e frequency_penalty (não suportados no grok-4-latest)
     }),
   });
 
@@ -133,8 +129,7 @@ app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
   if (WEBHOOK_SECRET) {
-    const header =
-      req.get("X-Telegram-Bot-Api-Secret-Token") || "";
+    const header = req.get("X-Telegram-Bot-Api-Secret-Token") || "";
     if (header !== WEBHOOK_SECRET) {
       console.warn("⚠️ Secret inválido");
       return;
@@ -175,19 +170,14 @@ app.post("/webhook", async (req, res) => {
 
     // deixa mais humano: corta se ficar grande
     if (reply.length > 220) {
-      reply =
-        reply.split(".").slice(0, 2).join(".") +
-        "… 😏";
+      reply = reply.split(".").slice(0, 2).join(".") + "… 😏";
     }
 
     pushHistory(chatId, "assistant", reply);
     await tgSendMessage(chatId, reply);
   } catch (e) {
     console.error("Grok error:", e.message);
-    await tgSendMessage(
-      chatId,
-      "Hmm… algo deu errado 😌 tenta de novo pra mim"
-    );
+    await tgSendMessage(chatId, "Hmm… algo deu errado 😌 tenta de novo pra mim");
   }
 });
 
