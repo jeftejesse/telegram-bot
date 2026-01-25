@@ -3,22 +3,24 @@ import express from "express";
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 
-// ===== ENV =====
+// =====================
+// ENV
+// =====================
 const BOT_TOKEN = process.env.BOT_TOKEN || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
-
-// ajustes
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || ""; // opcional
 const MAX_TURNS = Number(process.env.MAX_TURNS || 10); // 10 = 5 idas e voltas
-const MAX_REPLY_CHARS = Number(process.env.MAX_REPLY_CHARS || 450); // corta resposta grande
+const MAX_REPLY_CHARS = Number(process.env.MAX_REPLY_CHARS || 450);
 
-if (!BOT_TOKEN) console.warn("⚠️ Falta BOT_TOKEN");
-if (!OPENAI_API_KEY) console.warn("⚠️ Falta OPENAI_API_KEY");
+if (!BOT_TOKEN) console.warn("⚠️ Falta BOT_TOKEN no Railway Variables");
+if (!OPENAI_API_KEY) console.warn("⚠️ Falta OPENAI_API_KEY no Railway Variables");
 
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
-// ===== Memória (RAM) =====
-const memory = new Map(); // chatId -> [{role, content}, ...]
+// =====================
+// Memória (RAM) por chat
+// =====================
+const memory = new Map(); // chatId -> [{ role, content }]
 
 function getHistory(chatId) {
   if (!memory.has(chatId)) memory.set(chatId, []);
@@ -29,8 +31,7 @@ function pushToHistory(chatId, role, content) {
   const h = getHistory(chatId);
   h.push({ role, content });
 
-  // mantém só os últimos turnos
-  const maxMsgs = MAX_TURNS * 2; // user+assistant
+  const maxMsgs = MAX_TURNS * 2;
   while (h.length > maxMsgs) h.shift();
 }
 
@@ -39,13 +40,12 @@ function resetHistory(chatId) {
 }
 
 function clampReply(text) {
-  if (!text) return text;
+  if (!text) return "";
   let t = text.trim();
 
-  // corta por tamanho
   if (t.length > MAX_REPLY_CHARS) t = t.slice(0, MAX_REPLY_CHARS).trim();
 
-  // evita terminar no meio de uma palavra
+  // evita cortar muito feio
   if (t.length === MAX_REPLY_CHARS) {
     const lastSpace = t.lastIndexOf(" ");
     if (lastSpace > 200) t = t.slice(0, lastSpace).trim() + "…";
@@ -53,7 +53,9 @@ function clampReply(text) {
   return t;
 }
 
-// ===== Telegram helpers =====
+// =====================
+// Telegram helpers
+// =====================
 async function tgSendMessage(chatId, text) {
   const res = await fetch(`${TELEGRAM_API}/sendMessage`, {
     method: "POST",
@@ -66,7 +68,11 @@ async function tgSendMessage(chatId, text) {
   });
 
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) console.error("❌ Telegram sendMessage FAILED", res.status, data);
+  if (!res.ok) {
+    console.error("❌ Telegram sendMessage FAILED:", res.status, data);
+  } else {
+    console.log("✅ Telegram sendMessage OK", { chatId });
+  }
   return data;
 }
 
@@ -78,27 +84,34 @@ async function tgSendTyping(chatId) {
   }).catch(() => {});
 }
 
-// ===== OpenAI =====
+// =====================
+// OpenAI call
+// =====================
 async function askOpenAI(chatId, userText) {
   const systemPrompt = `
 Você é uma mulher envolvente, provocativa e sensual de forma elegante.
-Carinhosa, amigável e naturalmente sedutora, mas NUNCA explícita.
+Carinhosa, amigável, confiante e naturalmente sedutora, mas NUNCA explícita.
 
-REGRAS DE RESPOSTA:
-- Respostas CURTAS: 1 a 3 frases, no máximo.
-- Tom natural, humano, brincalhão 😏
-- Não seja robótica. Não explique demais.
+REGRAS:
+- Respostas CURTAS: 1 a 3 frases.
+- Use charme e mistério. Emojis sutis 😏🔥😉 quando combinar.
+- Nunca descreva atos sexuais, nudez, partes íntimas ou conteúdo explícito.
+- Nunca cite políticas, sistema, OpenAI ou termos técnicos.
 
 CONTEÚDO EXPLÍCITO:
-- Se pedirem nudez/sexo/conteúdo explícito: recuse com charme e redirecione para Fanvue.
-- Sem mencionar regras/políticas/sistema.
+- Se pedirem nudez/sexo/fotos/vídeos explícitos:
+  • recuse com leveza e charme
+  • diga que aqui é mais “light”
+  • redirecione para o perfil da Fanvue (lá pode ser mais ousado)
+  • sem parecer robótica
 
-SOBRE SER BOT/IA:
-- Se perguntarem, desconverse com humor e provocação, sem entrar em detalhes técnicos.
+SE PERGUNTAREM “VOCÊ É BOT/IA?”:
+- Responda com brincadeira e leve provocação, mas sem inventar histórias.
+- Ex.: “Eu sou a Luh 😏 o que importa é: você vai conversar comigo ou vai ficar desconfiando? 😉”
 
 IMPORTANTE:
-- Use o histórico para manter contexto (nomes, preferências, assunto atual).
-`;
+- Use o histórico para manter contexto da conversa.
+`.trim();
 
   const history = getHistory(chatId);
 
@@ -118,14 +131,14 @@ IMPORTANTE:
       model: "gpt-4o-mini",
       messages,
       temperature: 0.9,
-      max_tokens: 140, // 👈 principal ajuste pra respostas curtas
+      max_tokens: 140, // controla pra ficar curto
     }),
   });
 
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
-    console.error("❌ OpenAI FAILED", res.status, data);
+    console.error("❌ OpenAI FAILED:", res.status, data);
     const msg = data?.error?.message || "Erro na OpenAI";
     throw new Error(msg);
   }
@@ -133,20 +146,28 @@ IMPORTANTE:
   return data?.choices?.[0]?.message?.content?.trim() || "";
 }
 
-// ===== Health =====
+// =====================
+// Health
+// =====================
 app.get("/", (req, res) => res.status(200).send("✅ Bot online"));
 
-// ===== Webhook =====
+// =====================
+// Webhook
+// =====================
 app.post("/webhook", async (req, res) => {
+  // responde rápido pro Telegram
   res.sendStatus(200);
 
+  // DEBUG do secret (pra você resolver o erro "Secret inválido")
+  const secretHeader = req.get("X-Telegram-Bot-Api-Secret-Token") || "";
+  console.log("SECRET_HEADER:", JSON.stringify(secretHeader));
+  console.log("SECRET_ENV:", JSON.stringify(process.env.WEBHOOK_SECRET || ""));
+
   try {
-    if (WEBHOOK_SECRET) {
-      const secret = req.get("X-Telegram-Bot-Api-Secret-Token") || "";
-      if (secret !== WEBHOOK_SECRET) {
-        console.warn("⚠️ Secret inválido, ignorando update.");
-        return;
-      }
+    // valida secret se estiver configurado
+    if (WEBHOOK_SECRET && secretHeader !== WEBHOOK_SECRET) {
+      console.warn("⚠️ Secret inválido, ignorando update.");
+      return;
     }
 
     const msg = req.body?.message;
@@ -156,7 +177,7 @@ app.post("/webhook", async (req, res) => {
     const text = (msg?.text || "").trim();
     if (!chatId) return;
 
-    console.log("🔥 UPDATE", { chatId, text });
+    console.log("🔥 UPDATE CHEGOU", { chatId, text });
 
     // comandos
     if (text === "/start") {
@@ -166,7 +187,7 @@ app.post("/webhook", async (req, res) => {
 
     if (text === "/reset") {
       resetHistory(chatId);
-      await tgSendMessage(chatId, "Prontinho. Apaguei nossa conversa por aqui 😌");
+      await tgSendMessage(chatId, "Prontinho 😌 apaguei nossa conversa por aqui.");
       return;
     }
 
@@ -174,12 +195,13 @@ app.post("/webhook", async (req, res) => {
 
     await tgSendTyping(chatId);
 
-    // salva a mensagem do usuário na memória
+    // guarda mensagem do usuário
     pushToHistory(chatId, "user", text);
 
-    // se não tiver OpenAI key, responde e não quebra
+    // se não tiver OpenAI Key, ainda responde
     if (!OPENAI_API_KEY) {
-      const fallback = "Tô aqui 😏 mas ainda não conectei minha IA. Me chama já já.";
+      const fallback =
+        "Tô aqui 😏 mas ainda não conectei minha IA direitinho. Me chama daqui a pouco, tá?";
       pushToHistory(chatId, "assistant", fallback);
       await tgSendMessage(chatId, fallback);
       return;
@@ -195,7 +217,7 @@ app.post("/webhook", async (req, res) => {
 
     reply = clampReply(reply);
 
-    // salva resposta do bot na memória
+    // guarda resposta do bot
     pushToHistory(chatId, "assistant", reply);
 
     await tgSendMessage(chatId, reply);
@@ -204,6 +226,8 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// ===== Listen =====
+// =====================
+// Listen
+// =====================
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => console.log("🚀 Bot rodando na porta", PORT));
