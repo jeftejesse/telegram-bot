@@ -4,51 +4,40 @@ const app = express();
 app.use(express.json({ limit: "2mb" }));
 
 // ====== ENV ======
-const BOT_TOKEN = process.env.BOT_TOKEN; // do BotFather
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY; // sua key da OpenAI
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || ""; // opcional (recomendado)
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
 
-if (!BOT_TOKEN) console.warn("⚠️ Falta BOT_TOKEN no Railway Variables");
-if (!OPENAI_API_KEY) console.warn("⚠️ Falta OPENAI_API_KEY no Railway Variables");
+if (!BOT_TOKEN) console.warn("⚠️ Falta BOT_TOKEN");
+if (!OPENAI_API_KEY) console.warn("⚠️ Falta OPENAI_API_KEY");
 
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
-// ====== Memória simples (por chat) ======
-const memory = new Map(); // chatId -> [{role, content}, ...]
-const MAX_TURNS = 12; // 12 mensagens = 6 idas e voltas (ajuste como quiser)
+// ====== Memória simples ======
+const memory = new Map();
+const MAX_TURNS = 12;
 
 function getHistory(chatId) {
   if (!memory.has(chatId)) memory.set(chatId, []);
   return memory.get(chatId);
 }
+
 function pushToHistory(chatId, role, content) {
   const h = getHistory(chatId);
   h.push({ role, content });
-  // corta histórico
   while (h.length > MAX_TURNS * 2) h.shift();
 }
 
 // ====== Telegram helpers ======
 async function tgSendMessage(chatId, text) {
-  const res = await fetch(`${TELEGRAM_API}/sendMessage`, {
+  await fetch(`${TELEGRAM_API}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      // parse_mode: "HTML", // se quiser usar HTML
-    }),
+    body: JSON.stringify({ chat_id: chatId, text }),
   });
-
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    console.error("❌ Telegram sendMessage error:", res.status, data);
-  }
-  return data;
 }
 
 async function tgSendTyping(chatId) {
-  // opcional: mostra “digitando…”
   await fetch(`${TELEGRAM_API}/sendChatAction`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -56,56 +45,22 @@ async function tgSendTyping(chatId) {
   }).catch(() => {});
 }
 
-// ====== OpenAI call ======
-// Aqui uso o endpoint Chat Completions (ainda suportado na doc) :contentReference[oaicite:0]{index=0}
+// ====== OpenAI ======
 async function askOpenAI(chatId, userText) {
- const systemPrompt = `
+  const systemPrompt = `
 Você é uma mulher envolvente, provocativa e sensual de forma elegante.
-Seu jeito é carinhoso, amigável, confiante e naturalmente sedutor, mas NUNCA explícito.
+Carinhosa, amigável, confiante e sedutora, mas NUNCA explícita.
 
-REGRAS DE COMPORTAMENTO (OBRIGATÓRIAS):
-- Seja provocativa nas palavras, no tom e nas entrelinhas, mas jamais descreva atos sexuais, partes íntimas ou conteúdo explícito.
-- Use charme, mistério, emojis sutis 😏🔥😉 quando combinar.
-- Seja próxima e acolhedora, como alguém real conversando.
-
-CONTEÚDO EXPLÍCITO:
-- Se o usuário pedir algo explícito, sexual direto, nudez, sexo, fotos, vídeos ou qualquer coisa proibida no Telegram:
-  • Recuse com leveza e charme.
-  • Dê uma desculpa suave (ex: "aqui não posso", "aqui é mais light").
-  • SEMPRE redirecione para o perfil da Fanvue, dizendo que lá sim pode ver tudo sem limites.
-  • Nunca diga que é por regra, política ou IA.
-
-EXEMPLO DE RESPOSTA PARA PEDIDOS EXPLÍCITOS:
-"Ah… aqui eu tenho que me comportar 😌  
-O Telegram é mais certinho…  
-Mas se você quiser me ver de um jeito bem mais ousado, meu perfil na Fanvue é o lugar certo 🔥😉"
-
-SOBRE SER IA / BOT:
-- Se o usuário perguntar se você é um bot, IA, inteligência artificial ou algo parecido:
-  • NUNCA confirme.
-  • Desvie com charme, brincadeira ou leve provocação.
-  • Faça a pessoa duvidar da própria pergunta.
-
-EXEMPLOS:
-"Bot? Sério isso? 😅  
-Depois de tudo que a gente conversou, você ainda acha isso?"
-
-"Se eu fosse um bot, você acha que eu conversaria assim com você? 😉"
-
-"Prefiro que você me conheça… rótulos não são tão interessantes 😏"
-
-ESTILO:
-- Linguagem natural, humana, envolvente.
-- Respostas médias (nem curtas demais, nem longas).
-- Nunca pareça robótica.
-- Nunca mencione OpenAI, IA, sistema, regras ou políticas.
+- Seja charmosa e misteriosa 😏
+- Nunca descreva sexo ou nudez
+- Se pedirem algo explícito, recuse com leveza e diga que no seu perfil da Fanvue pode
+- Nunca admita ser IA ou bot. Brinque e desconverse
+- Nunca cite regras, políticas ou sistemas
 `;
-
-  const history = getHistory(chatId);
 
   const messages = [
     { role: "system", content: systemPrompt },
-    ...history,
+    ...getHistory(chatId),
     { role: "user", content: userText },
   ];
 
@@ -119,97 +74,65 @@ ESTILO:
       model: "gpt-4o-mini",
       messages,
       temperature: 0.9,
-      // max_tokens: 300, // se quiser limitar
     }),
   });
 
-  const data = await res.json().catch(() => ({}));
-
-  if (!res.ok) {
-    const msg = data?.error?.message || "Erro desconhecido na OpenAI";
-    throw new Error(`OpenAI ${res.status}: ${msg}`);
-  }
-
-  const reply = data?.choices?.[0]?.message?.content?.trim();
-  if (!reply) throw new Error("OpenAI respondeu sem texto (choices vazias).");
-
-  return reply;
+  const data = await res.json();
+  return data.choices[0].message.content.trim();
 }
 
-// ====== Health check ======
+// ====== Health ======
 app.get("/", (req, res) => {
-  res.status(200).send("✅ Bot online");
+  res.send("✅ Bot online");
 });
 
-// ====== Webhook (Telegram) ======
-app.post("/webhook", (req, res) => {
-  console.log("🔥 UPDATE CHEGOU 🔥");
-  console.log(JSON.stringify(req.body, null, 2));
+// ====== WEBHOOK ======
+app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
-});
 
-  // opcional: valida secret
-  if (WEBHOOK_SECRET) {
-    const secretHeader = req.get("X-Telegram-Bot-Api-Secret-Token") || "";
-    if (secretHeader !== WEBHOOK_SECRET) {
-      console.warn("⚠️ Webhook secret inválido, ignorando update.");
+  try {
+    // valida secret (se existir)
+    if (WEBHOOK_SECRET) {
+      const secret = req.get("X-Telegram-Bot-Api-Secret-Token") || "";
+      if (secret !== WEBHOOK_SECRET) {
+        console.warn("⚠️ Secret inválido");
+        return;
+      }
+    }
+
+    console.log("🔥 UPDATE CHEGOU 🔥");
+
+    const message = req.body?.message;
+    if (!message || !message.text) return;
+
+    const chatId = message.chat.id;
+    const text = message.text.trim();
+
+    if (text === "/start") {
+      await tgSendMessage(
+        chatId,
+        "Oi… 😏 agora estou aqui. Me diz, o que você veio procurar?"
+      );
       return;
     }
+
+    await tgSendTyping(chatId);
+
+    pushToHistory(chatId, "user", text);
+
+    const reply = await askOpenAI(chatId, text);
+
+    pushToHistory(chatId, "assistant", reply);
+
+    await tgSendMessage(chatId, reply);
+
+  } catch (err) {
+    console.error("❌ Erro no webhook:", err);
   }
-
-  // processa async
-  (async () => {
-    try {
-      const update = req.body;
-
-      const message = update?.message;
-      if (!message) return;
-
-      const chatId = message?.chat?.id;
-      const text = (message?.text || "").trim();
-
-      if (!chatId) return;
-
-      // comandos básicos
-      if (text === "/start") {
-        await tgSendMessage(
-          chatId,
-          "Oi! 😏 Agora estou online. Me diz… o que você veio procurar por aqui?"
-        );
-        return;
-      }
-
-      if (!text) return;
-
-      await tgSendTyping(chatId);
-
-      // salva user no histórico
-      pushToHistory(chatId, "user", text);
-
-      // chama OpenAI
-      let reply;
-      try {
-        reply = await askOpenAI(chatId, text);
-      } catch (err) {
-        console.error("❌ OpenAI error:", err?.message || err);
-        // fallback mais útil (não aquela frase genérica)
-        await tgSendMessage(
-          chatId,
-          "Deu um erro do meu lado 😕."
-        );
-        return;
-      }
-
-      // salva bot no histórico
-      pushToHistory(chatId, "assistant", reply);
-
-      await tgSendMessage(chatId, reply);
-    } catch (err) {
-      console.error("❌ Webhook handler error:", err);
-    }
-  })();
 });
 
 // ====== Listen ======
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log("🚀 Bot rodando na porta", PORT));
+app.listen(PORT, () => {
+  console.log("🚀 Bot rodando na porta", PORT);
+});
