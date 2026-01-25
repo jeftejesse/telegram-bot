@@ -1,36 +1,36 @@
 import express from "express";
-import fetch from "node-fetch";
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 
 // ================= ENV =================
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
 
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
-if (!BOT_TOKEN) console.warn("⚠️ Falta BOT_TOKEN");
-if (!OPENAI_API_KEY) console.warn("⚠️ Falta OPENAI_API_KEY");
+if (!BOT_TOKEN) console.warn("⚠️ BOT_TOKEN não configurado");
+if (!OPENAI_API_KEY) console.warn("⚠️ OPENAI_API_KEY não configurada (IA desligada)");
+if (!WEBHOOK_SECRET) console.warn("⚠️ WEBHOOK_SECRET não configurado");
 
-// ================= MEMÓRIA SIMPLES =================
+// ================= MEMÓRIA (RAM) =================
 const memory = new Map();
-const MAX_TURNS = 6;
+const MAX_TURNS = 8;
 
 function getHistory(chatId) {
   if (!memory.has(chatId)) memory.set(chatId, []);
   return memory.get(chatId);
 }
 
-function save(chatId, role, content) {
-  const h = getHistory(chatId);
-  h.push({ role, content });
-  while (h.length > MAX_TURNS * 2) h.shift();
+function saveHistory(chatId, role, content) {
+  const history = getHistory(chatId);
+  history.push({ role, content });
+  while (history.length > MAX_TURNS * 2) history.shift();
 }
 
 // ================= TELEGRAM =================
-async function tgSend(chatId, text) {
+async function tgSendMessage(chatId, text) {
   await fetch(`${TELEGRAM_API}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -43,17 +43,24 @@ async function tgTyping(chatId) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ chat_id: chatId, action: "typing" }),
-  });
+  }).catch(() => {});
 }
 
 // ================= OPENAI =================
-async function askAI(chatId, userText) {
+async function askOpenAI(chatId, userText) {
   const systemPrompt = `
-Você é uma mulher sedutora elegante.
-Respostas CURTAS.
-Tom natural, envolvente, provocante leve.
+Você é uma mulher envolvente, provocativa e carinhosa.
+Respostas CURTAS, naturais e humanas.
 Nunca explícita.
-Nunca diga que é IA ou bot.
+
+Se pedirem algo explícito:
+- recuse com charme
+- diga que aqui não pode
+- convide para Fanvue
+
+Se perguntarem se você é bot ou IA:
+- nunca confirme
+- desconverse com charme 😏
 `;
 
   const messages = [
@@ -71,17 +78,17 @@ Nunca diga que é IA ou bot.
     body: JSON.stringify({
       model: "gpt-4o-mini",
       messages,
-      temperature: 0.8,
+      temperature: 0.9,
       max_tokens: 120,
     }),
   });
 
   const data = await res.json();
-  return data.choices?.[0]?.message?.content || "Hmm… 😏";
+  return data.choices?.[0]?.message?.content?.trim() || "Hmm… fala mais 😌";
 }
 
 // ================= HEALTH =================
-app.get("/", (req, res) => {
+app.get("/", (_, res) => {
   res.status(200).send("✅ Bot online");
 });
 
@@ -89,15 +96,13 @@ app.get("/", (req, res) => {
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
-  const headerSecret =
-    req.get("X-Telegram-Bot-Api-Secret-Token") || "";
-
-  console.log("SECRET_HEADER:", headerSecret);
-  console.log("SECRET_ENV:", WEBHOOK_SECRET);
-
-  if (WEBHOOK_SECRET && headerSecret !== WEBHOOK_SECRET) {
-    console.warn("⚠️ Secret inválido, ignorando update.");
-    return;
+  // valida secret
+  if (WEBHOOK_SECRET) {
+    const secret = req.get("X-Telegram-Bot-Api-Secret-Token") || "";
+    if (secret !== WEBHOOK_SECRET) {
+      console.warn("⚠️ Secret inválido, ignorando update");
+      return;
+    }
   }
 
   const msg = req.body?.message;
@@ -107,31 +112,16 @@ app.post("/webhook", async (req, res) => {
   const text = (msg.text || "").trim();
   if (!text) return;
 
-  console.log("🔥 UPDATE CHEGOU:", text);
+  console.log("🔥 UPDATE:", text);
 
+  // /start
   if (text === "/start") {
-    await tgSend(chatId, "Oi 😏 agora sim… me diz, o que você quer?");
+    await tgSendMessage(chatId, "Oi 😏 agora estou aqui… me diz, o que você veio procurar?");
     return;
   }
 
   await tgTyping(chatId);
-  save(chatId, "user", text);
 
-  let reply;
-  try {
-    reply = OPENAI_API_KEY
-      ? await askAI(chatId, text)
-      : "Ainda não conectei minha IA… tenta de novo daqui a pouco 😘";
-  } catch {
-    reply = "Hmm… deu um errinho aqui 😕";
-  }
-
-  save(chatId, "assistant", reply);
-  await tgSend(chatId, reply);
-});
-
-// ================= START =================
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () =>
-  console.log("🚀 Bot rodando na porta", PORT)
-);
+  // SEM IA
+  if (!OPENAI_API_KEY) {
+    await tgSendMessage(chatId, "Tô aqui 😌 mas minha IA ai
