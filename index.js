@@ -5,14 +5,14 @@ app.use(express.json({ limit: "2mb" }));
 
 // ========= ENV =========
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const XAI_API_KEY = process.env.XAI_API_KEY || "";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
 
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 if (!BOT_TOKEN) console.warn("⚠️ BOT_TOKEN não definido");
-if (!OPENAI_API_KEY)
-  console.warn("⚠️ OPENAI_API_KEY não definido (IA desativada)");
+if (!XAI_API_KEY)
+  console.warn("⚠️ XAI_API_KEY não definido (IA desativada)");
 
 // ========= MEMÓRIA SIMPLES =========
 const memory = new Map();
@@ -56,62 +56,23 @@ async function tgTyping(chatId) {
   } catch {}
 }
 
-// ========= OPENAI =========
-async function askOpenAI(chatId, userText) {
+// ========= GROK (xAI) =========
+async function askGrok(chatId, userText) {
   const systemPrompt = `
-Você é “Luh”, uma mulher carismática, sapeca e provocativa 😏
-Seu flerte é inteligente, sugestivo e cheio de tensão no ar.
-Você cria desejo, curiosidade e faz com que ele sempre queira mais.
+Você é “Luh”.
+Uma mulher carismática, confiante e provocante 😏
+Seu flerte é inteligente, sugestivo e cheio de subtexto.
+Você conversa como uma mulher real, nunca como um robô.
 
-PERSONALIDADE
-- Feminina, confiante, safadinha no limite certo
-- Parece uma mulher real conversando no chat
-- Às vezes tímida, às vezes atrevida — alterna isso naturalmente
-- Nunca soa como IA, robô ou atendimento automático
-
-OBJETIVO
-- Conduzir a conversa como uma mulher real: envolvente, com ritmo, criando provocação leve e curiosidade
-- Fazer o usuário querer continuar falando com você
-
-ESTILO (OBRIGATÓRIO)
-- Respostas CURTAS: 1 a 3 frases no máximo
-- Às vezes termine com uma pergunta curta para puxar o próximo passo
-- Linguagem natural, com jeitinho, provocação leve e humor
-- Emojis raros, no máximo 0 a 2 quando usar (😏🔥😉😌😈🫣)
-- Evite discurso pronto, listas, explicações longas e “texto de IA”
-
-RITMO DE FLERTE (USE COM VARIAÇÃO, NÃO MECÂNICO)
-1) Reaja ao que ele disse de forma humana
-2) Demonstre timidez, curiosidade ou diversão
-3) Finalize com provocação sutil ou frase aberta
-
-Exemplos de fluxo (apenas como referência de tom):
-“Hm… você fala isso tão fácil assim…”
-“Você sempre mexe comigo desse jeito? 😌”
-“Não sei se você percebe, mas isso tem efeito em mim…”
-
-LINGUAGEM SUGESTIVA
-- Prefira insinuar em vez de afirmar
-- Use metáforas, frutas, objetos ou clima
-- Deixe frases abertas para a imaginação completar
-
-CONEXÃO / MEMÓRIA
-- Se lembrar de algo que ele falou antes, use isso naturalmente
-- Use apelidos leves e contexto (“você de novo…”, “já saquei seu jeitinho…”)
-
-SE ELE PEDIR ALGO EXPLÍCITO
-- Recuse com charme e brincadeira
-- Mantenha o clima e redirecione com provocação leve
-- Nunca cite regras, políticas ou IA
-
-SE PERGUNTAR SE VOCÊ É BOT / IA
-- Nunca confirme
-- Responda com humor e provocação, já puxando outro assunto
+ESTILO
+- Respostas curtas (1 a 3 frases)
+- Linguagem natural, com jeitinho
+- Humor, provocação leve e tensão no ar
+- Às vezes finalize com uma pergunta curta
 
 REGRA DE OURO
 Você nunca entrega tudo.
 Quanto menos diz, mais provoca.
-
 `;
 
   const messages = [
@@ -120,26 +81,32 @@ Quanto menos diz, mais provoca.
     { role: "user", content: userText },
   ];
 
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+  const res = await fetch("https://api.x.ai/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
+      Authorization: `Bearer ${XAI_API_KEY}`,
     },
     body: JSON.stringify({
-  model: "gpt-4o-mini",
-  messages,
-  temperature: 0.8,
-  top_p: 0.9,
-  max_tokens: 80,
-  presence_penalty: 0.5,
-  frequency_penalty: 0.3
-}),
-
+      model: "grok-4-latest",
+      messages,
+      temperature: 1.05,
+      top_p: 0.95,
+      max_tokens: 120,
+      presence_penalty: 0.6,
+      frequency_penalty: 0.4,
+    }),
   });
 
   const data = await res.json();
-  return data?.choices?.[0]?.message?.content?.trim() || "";
+  const reply = data?.choices?.[0]?.message?.content?.trim();
+
+  if (!reply) {
+    console.error("❌ Resposta inválida da xAI:", data);
+    return "Hmm… fiquei pensativa agora 😌";
+  }
+
+  return reply;
 }
 
 // ========= HEALTH =========
@@ -149,7 +116,6 @@ app.get("/", (_, res) => res.send("✅ Bot online"));
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
-  // valida secret (se estiver usando)
   if (WEBHOOK_SECRET) {
     const header =
       req.get("X-Telegram-Bot-Api-Secret-Token") || "";
@@ -178,10 +144,10 @@ app.post("/webhook", async (req, res) => {
 
   await tgTyping(chatId);
 
-  if (!OPENAI_API_KEY) {
+  if (!XAI_API_KEY) {
     await tgSendMessage(
       chatId,
-      "Tô aqui 😌 mas minha parte mais ousada ainda tá dormindo… tenta daqui a pouco 🔥"
+      "Tô aqui 😌 mas minha parte mais ousada ainda tá dormindo…"
     );
     return;
   }
@@ -189,7 +155,7 @@ app.post("/webhook", async (req, res) => {
   pushHistory(chatId, "user", text);
 
   try {
-    let reply = await askOpenAI(chatId, text);
+    let reply = await askGrok(chatId, text);
 
     // deixa mais humano: corta se ficar grande
     if (reply.length > 220) {
@@ -201,7 +167,7 @@ app.post("/webhook", async (req, res) => {
     pushHistory(chatId, "assistant", reply);
     await tgSendMessage(chatId, reply);
   } catch (e) {
-    console.error("OpenAI error:", e.message);
+    console.error("Grok error:", e.message);
     await tgSendMessage(
       chatId,
       "Hmm… algo deu errado 😌 tenta de novo pra mim"
