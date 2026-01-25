@@ -143,8 +143,10 @@ app.get("/", (req, res) => {
 
 // ====== Webhook (Telegram) ======
 app.post("/webhook", (req, res) => {
-  // RESPONDE IMEDIATO pro Telegram (pra não dar timeout/502)
+  console.log("🔥 UPDATE CHEGOU 🔥");
+  console.log(JSON.stringify(req.body, null, 2));
   res.sendStatus(200);
+});
 
   // opcional: valida secret
   if (WEBHOOK_SECRET) {
