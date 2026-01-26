@@ -101,8 +101,6 @@ REGRA DE ÁUDIO (nova):
 Agora vai… me deixa toda derretida com o que tu vai falar 💕
   `;
 
-  `.trim();
-
   const messages = [
     { role: "system", content: systemPrompt },
     ...getHistory(chatId),
