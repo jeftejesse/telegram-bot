@@ -204,6 +204,32 @@ app.post("/webhook", async (req, res) => {
   const msg = req.body?.message;
   if (!msg) return;
 
+    // ========= CAPTURA DE FILE_ID (para cadastrar áudios no SEU bot) =========
+  // Se você mandar um áudio/voz para o seu bot, ele responde com o file_id correto.
+  if (msg.voice?.file_id) {
+    await tgSendMessage(
+      msg.chat.id,
+      "✅ VOICE file_id (use no sendVoice):\n" + msg.voice.file_id
+    );
+    return;
+  }
+
+  if (msg.audio?.file_id) {
+    await tgSendMessage(
+      msg.chat.id,
+      "✅ AUDIO file_id (use no sendAudio):\n" + msg.audio.file_id
+    );
+    return;
+  }
+
+  if (msg.document?.file_id) {
+    await tgSendMessage(
+      msg.chat.id,
+      "✅ DOCUMENT file_id (se você enviou mp3 como arquivo):\n" + msg.document.file_id
+    );
+    return;
+  }
+  
   const chatId = msg.chat.id;
   const text = (msg.text || "").trim();
   if (!text) return;
