@@ -134,20 +134,17 @@ Agora vai… me deixa toda derretida com o que tu vai falar 💕
 const inactivityTimers = new Map();
 const lastAutoMessage = new Map(); // chatId → timestamp do último auto-message
 
-const INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 60 minutos (ajuste aqui se quiser)
+const INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 60 minutos
 const ONE_DAY_MS = 24 * 60 * 60 * 1000; // 1 dia
 
 function getAutoMessageText(history) {
   const lastMsgs = history.slice(-4).map(m => m.content.toLowerCase()).join(' '); // últimas 4 msgs
 
   if (lastMsgs.includes('molhada') || lastMsgs.includes('duro') || lastMsgs.includes('foder') || lastMsgs.includes('gozar') || lastMsgs.includes('sentar') || lastMsgs.includes('gemendo')) {
-    // Nível 3/4 - full safada
     return "Ei safadinho... sumiu? 😈 Tô aqui toda molhada esperando você voltar... imagina minha voz rouca te chamando pra me pegar forte... volta logo que eu tô louca de tesão 🔥";
   } else if (lastMsgs.includes('calorzinho') || lastMsgs.includes('arrepio') || lastMsgs.includes('abraço') || lastMsgs.includes('beijo') || lastMsgs.includes('coxa')) {
-    // Nível 2 - provocante
     return "Amorzinho... cadê você? 😏 Tô sentindo um friozinho gostoso na barriga de saudade... volta pra gente continuar esse papo quentinho... tô mordendo o lábio aqui pensando em você 💕";
   } else {
-    // Nível 1 - tímida/doce
     return "Ei docinho... sumiu? 😊 Tô aqui sorrindo sozinha esperando sua mensagem... me conta o que tá acontecendo aí que eu tô curiosa... volta logo, tá bom? 🥰";
   }
 }
@@ -159,7 +156,7 @@ function resetInactivityTimer(chatId) {
 
   const lastSent = lastAutoMessage.get(chatId) || 0;
   if (Date.now() - lastSent < ONE_DAY_MS) {
-    return; // já mandou hoje, não manda de novo
+    return;
   }
 
   const timer = setTimeout(async () => {
@@ -210,7 +207,6 @@ app.post("/webhook", async (req, res) => {
       "Tudo bem, docinho... 😊 Eu paro por aqui. Se quiser voltar algum dia, é só me chamar de novo. Beijo gostoso 💕"
     );
     memory.delete(chatId);
-    // Cancela timer se existir
     if (inactivityTimers.has(chatId)) {
       clearTimeout(inactivityTimers.get(chatId));
       inactivityTimers.delete(chatId);
@@ -234,12 +230,10 @@ app.post("/webhook", async (req, res) => {
   try {
     let reply = await askGrok(chatId, text);
 
-    // corta se ficar grande
     if (reply.length > 220) {
       reply = reply.split(".").slice(0, 2).join(".") + "… 😏";
     }
 
-    // Detecta pedido de áudio
     const lowerText = text.toLowerCase();
     const isAudioRequest =
       lowerText.includes('áudio') ||
@@ -252,7 +246,6 @@ app.post("/webhook", async (req, res) => {
       lowerText.includes('manda áudio');
 
     if (isAudioRequest) {
-      // Lista de file_id dos áudios
       const audioFileIds = [
         "CQACAgEAAxkBAAEDFPlpduUOWbQdfAlJMsCX2M47UfcDqgAC6QcAArUkuEcxLsHNA4Sd0jgE",
         "CQACAgEAAxkBAAEDFPtpduYi7zFJVmRkVebnM1vY_fDMhAAC6gcAArUkuEdrr5qcvymN6jgE",
@@ -283,7 +276,7 @@ app.post("/webhook", async (req, res) => {
       await tgSendMessage(chatId, reply);
     }
 
-    // Reseta o timer de inatividade toda vez que o usuário manda mensagem
+    // Reseta o timer de inatividade
     resetInactivityTimer(chatId);
   } catch (e) {
     console.error("Grok error:", e.message);
@@ -299,7 +292,7 @@ function resetInactivityTimer(chatId) {
 
   const lastSent = lastAutoMessage.get(chatId) || 0;
   if (Date.now() - lastSent < ONE_DAY_MS) {
-    return; // já mandou hoje, não manda de novo
+    return;
   }
 
   const timer = setTimeout(async () => {
