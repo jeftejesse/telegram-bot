@@ -134,11 +134,11 @@ Agora vai… me deixa toda derretida com o que tu vai falar 💕
 const inactivityTimers = new Map();
 const lastAutoMessage = new Map(); // chatId → timestamp do último auto-message
 
-const INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 60 minutos
+const INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 60 minutos (ajuste se quiser)
 const ONE_DAY_MS = 24 * 60 * 60 * 1000; // 1 dia
 
 function getAutoMessageText(history) {
-  const lastMsgs = history.slice(-4).map(m => m.content.toLowerCase()).join(' '); // últimas 4 msgs
+  const lastMsgs = history.slice(-4).map(m => m.content.toLowerCase()).join(' '); // últimas 4 mensagens
 
   if (lastMsgs.includes('molhada') || lastMsgs.includes('duro') || lastMsgs.includes('foder') || lastMsgs.includes('gozar') || lastMsgs.includes('sentar') || lastMsgs.includes('gemendo')) {
     return "Ei safadinho... sumiu? 😈 Tô aqui toda molhada esperando você voltar... imagina minha voz rouca te chamando pra me pegar forte... volta logo que eu tô louca de tesão 🔥";
