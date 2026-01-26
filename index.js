@@ -115,22 +115,7 @@ VARIAÇÃO DE TAMANHO (OBRIGATÓRIO):
 Agora vai… me deixa toda derretida com o que tu vai falar 💕
 `.trim();
 
-  const res = await fetch("https://api.x.ai/v1/chat/completions", {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    Authorization: "Bearer " + XAI_API_KEY,
-  },
-  body: JSON.stringify({
-    model: "grok-4-latest",
-    messages,
-    temperature: 1.1,
-    top_p: 0.9,
-    max_tokens: 60
-  })
-});
-
-const messages = [
+  const messages = [
     { role: "system", content: systemPrompt },
     ...getHistory(chatId),
     { role: "user", content: userText },
@@ -157,7 +142,7 @@ const messages = [
 
   if (!reply) {
     console.error("❌ Resposta inválida da xAI:", data);
-    return "Desculpe… Tive que sair agora, mas logo volto😌";
+    return "Desculpe… tive que sair agora, daqui a pouco eu volto";
   }
 
   return reply;
