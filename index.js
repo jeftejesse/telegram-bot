@@ -205,7 +205,7 @@ function resetInactivityTimer(chatId) {
 const pendingText = new Map();        // chatId -> string
 const pendingTimer = new Map();       // chatId -> timeout
 
-const DEBOUNCE_MS = 1200;
+const DEBOUNCE_MS = 1800;
 
 function queueUserText(chatId, text, onFlush) {
   const prev = pendingText.get(chatId) || "";
