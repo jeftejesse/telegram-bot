@@ -130,13 +130,34 @@ Agora vai… me deixa toda derretida com o que tu vai falar 💕
   })
 });
 
-const data = await res.json();
+const messages = [
+    { role: "system", content: systemPrompt },
+    ...getHistory(chatId),
+    { role: "user", content: userText },
+  ];
+
+  const res = await fetch("https://api.x.ai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer " + XAI_API_KEY,
+    },
+    body: JSON.stringify({
+      model: "grok-4-latest",
+      messages: messages,
+      temperature: 1.1,
+      top_p: 0.9,
+      max_tokens: 60,
+    }),
+  });
+
+  const data = await res.json();
 
   const reply = data?.choices?.[0]?.message?.content?.trim();
 
   if (!reply) {
     console.error("❌ Resposta inválida da xAI:", data);
-    return "Hmm… fiquei pensativa agora 😌";
+    return "Desculpe… Tive que sair agora, mas logo volto😌";
   }
 
   return reply;
