@@ -290,21 +290,21 @@ app.post("/webhook", async (req, res) => {
 
     if (isAudioRequest) {
       const audioFileIds = [
-        "CQACAgEAAxkBAAEDFPlpduUOWbQdfAlJMsCX2M47UfcDqgAC6QcAArUkuEcxLsHNA4Sd0jgE",
-        "CQACAgEAAxkBAAEDFPtpduYi7zFJVmRkVebnM1vY_fDMhAAC6gcAArUkuEdrr5qcvymN6jgE",
-        "CQACAgEAAxkBAAEDFP1pduaWDDKZovtJsng9hi2ViQzQiwAC7AcAArUkuEfWFgsJLaJX-TgE",
-        "CQACAgEAAxkBAAEDFP9pdubX8yGC95_kwNSS-U7AOaUvkgAC7QcAArUkuEdLCA6HfTTZDzgE",
-        "CQACAgEAAxkBAAEDFQFpdudFCfj8vtqc0F-1qGXdQjbXpAAC7gcAArUkuEdIEJcBbrFhWTgE",
-        "CQACAgEAAxkBAAEDFQNpdudu0U7FD4OeKn_T30VFFe3nCQAC7wcAArUkuEdHJ4R30JgtqTgE",
-        "CQACAgEAAxkBAAEDFQVpdueiMKM1mZ8JdNEGu_6qz--0AAPwBwACtSS4Ry_TLXiTERccOAQ",
-        "CQACAgEAAxkBAAEDFQdpdufeWeV3QdU4bCs52BJEO-dvoAAC8QcAArUkuEelD64d6PLyaDgE",
+        "CQACAgEAAxkBAAIBTml3CWDuY7HrHEOQg5_ChH6TxQQ1AALJBwACsSm4R3nmZbXEiRsAATgE",
+        "CQACAgEAAxkBAAIBUGl3Cbipx2Zul8pbTwbRltKwc-dwAALMBwACsSm4R14J8f6iCNChOAQ",
+        "CQACAgEAAxkBAAIBUml3CdwrQLx2Z4YAAfaWxWoWQV6vWwACzQcAArEpuEdHz1sFrnFqyDgE",
+        "CQACAgEAAxkBAAIBVGl3CgGv1cW7X42pksqgGUhSN8iWAALOBwACsSm4R_LS9H3lsyeSOAQ",
+        "CQACAgEAAxkBAAIBVml3CiTKe1Sw2NfUkve9MYdOoJJoAALPBwACsSm4R8wpCNW5B-QXOAQ",
+        "CQACAgEAAxkBAAIBWGl3Cj1N7PVVPic5Th8CLucF_0MtAALQBwACsSm4R98viLnVimiqOAQ",
+        "CQACAgEAAxkBAAIBWml3CmAyJPfn-evQ3A27CEdekO6YAALRBwACsSm4R-G6F34rsF5QOAQ",
+        "CQACAgEAAxkBAAIBXGl3CnerLbuQfkKxIoQKaHfKdm_vAALSBwACsSm4R_nUmEA-HuVFOAQ",
       ];
 
       const randomFileId = audioFileIds[Math.floor(Math.random() * audioFileIds.length)];
 
-      await tgSendMessage(chatId, "Ah safadinho... aqui vai minha voz pra te arrepiar 😏");
+await tgSendMessage(chatId, "Ah safadinho... aqui vai minha voz pra te arrepiar 😏");
 
-      const r = await fetch(TELEGRAM_API + "/sendAudio", {
+const r = await fetch(TELEGRAM_API + "/sendAudio", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
@@ -314,11 +314,10 @@ app.post("/webhook", async (req, res) => {
 });
 
 const j = await r.json().catch(() => null);
-
 if (!r.ok || !j?.ok) {
-  console.error("❌ Telegram sendVoice falhou:", r.status, j);
+  console.error("❌ Telegram sendAudio falhou:", r.status, j);
 } else {
-  console.log("✅ Telegram sendVoice OK:", j.result?.voice?.file_id);
+  console.log("✅ Telegram sendAudio OK:", j.result?.audio?.file_id);
 }
 
       pushHistory(chatId, "assistant", "[Áudio enviado]");
