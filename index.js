@@ -130,6 +130,48 @@ Agora vai… me deixa toda derretida com o que tu vai falar 💕
   return reply;
 }
 
+// ========= INATIVIDADE INTELIGENTE (versão avançada) =========
+const inactivityTimers = new Map();
+const lastAutoMessage = new Map(); // chatId → timestamp do último auto-message
+
+const INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 60 minutos (ajuste aqui se quiser)
+const ONE_DAY_MS = 24 * 60 * 60 * 1000; // 1 dia
+
+function getAutoMessageText(history) {
+  const lastMsgs = history.slice(-4).map(m => m.content.toLowerCase()).join(' '); // últimas 4 msgs
+
+  if (lastMsgs.includes('molhada') || lastMsgs.includes('duro') || lastMsgs.includes('foder') || lastMsgs.includes('gozar') || lastMsgs.includes('sentar') || lastMsgs.includes('gemendo')) {
+    // Nível 3/4 - full safada
+    return "Ei safadinho... sumiu? 😈 Tô aqui toda molhada esperando você voltar... imagina minha voz rouca te chamando pra me pegar forte... volta logo que eu tô louca de tesão 🔥";
+  } else if (lastMsgs.includes('calorzinho') || lastMsgs.includes('arrepio') || lastMsgs.includes('abraço') || lastMsgs.includes('beijo') || lastMsgs.includes('coxa')) {
+    // Nível 2 - provocante
+    return "Amorzinho... cadê você? 😏 Tô sentindo um friozinho gostoso na barriga de saudade... volta pra gente continuar esse papo quentinho... tô mordendo o lábio aqui pensando em você 💕";
+  } else {
+    // Nível 1 - tímida/doce
+    return "Ei docinho... sumiu? 😊 Tô aqui sorrindo sozinha esperando sua mensagem... me conta o que tá acontecendo aí que eu tô curiosa... volta logo, tá bom? 🥰";
+  }
+}
+
+function resetInactivityTimer(chatId) {
+  if (inactivityTimers.has(chatId)) {
+    clearTimeout(inactivityTimers.get(chatId));
+  }
+
+  const lastSent = lastAutoMessage.get(chatId) || 0;
+  if (Date.now() - lastSent < ONE_DAY_MS) {
+    return; // já mandou hoje, não manda de novo
+  }
+
+  const timer = setTimeout(async () => {
+    const text = getAutoMessageText(getHistory(chatId));
+    await tgSendMessage(chatId, text);
+    lastAutoMessage.set(chatId, Date.now());
+    inactivityTimers.delete(chatId);
+  }, INACTIVITY_TIMEOUT);
+
+  inactivityTimers.set(chatId, timer);
+}
+
 // ========= HEALTH =========
 app.get("/", (_, res) => res.send("✅ Bot online"));
 
@@ -168,6 +210,12 @@ app.post("/webhook", async (req, res) => {
       "Tudo bem, docinho... 😊 Eu paro por aqui. Se quiser voltar algum dia, é só me chamar de novo. Beijo gostoso 💕"
     );
     memory.delete(chatId);
+    // Cancela timer se existir
+    if (inactivityTimers.has(chatId)) {
+      clearTimeout(inactivityTimers.get(chatId));
+      inactivityTimers.delete(chatId);
+    }
+    lastAutoMessage.delete(chatId);
     return;
   }
 
@@ -193,33 +241,31 @@ app.post("/webhook", async (req, res) => {
 
     // Detecta pedido de áudio
     const lowerText = text.toLowerCase();
-    const isAudioRequest = 
-      lowerText.includes('áudio') || 
-      lowerText.includes('audio') || 
-      lowerText.includes('voz') || 
-      lowerText.includes('fala') || 
-      lowerText.includes('ouvir') || 
-      lowerText.includes('escutar') || 
-      lowerText.includes('manda voz') || 
+    const isAudioRequest =
+      lowerText.includes('áudio') ||
+      lowerText.includes('audio') ||
+      lowerText.includes('voz') ||
+      lowerText.includes('fala') ||
+      lowerText.includes('ouvir') ||
+      lowerText.includes('escutar') ||
+      lowerText.includes('manda voz') ||
       lowerText.includes('manda áudio');
 
     if (isAudioRequest) {
-      // Lista de file_id dos áudios que você mandou
+      // Lista de file_id dos áudios
       const audioFileIds = [
-        "CQACAgEAAxkBAAEDFPlpduUOWbQdfAlJMsCX2M47UfcDqgAC6QcAArUkuEcxLsHNA4Sd0jgE", // Nível 1 - Mande um oi
-        "CQACAgEAAxkBAAEDFPtpduYi7zFJVmRkVebnM1vY_fDMhAAC6gcAArUkuEdrr5qcvymN6jgE", // Nível 2 - Quer me ouvir gemendo
-        "CQACAgEAAxkBAAEDFP1pduaWDDKZovtJsng9hi2ViQzQiwAC7AcAArUkuEfWFgsJLaJX-TgE", // Nível 2 - Me deixe molhadinha
-        "CQACAgEAAxkBAAEDFP9pdubX8yGC95_kwNSS-U7AOaUvkgAC7QcAArUkuEdLCA6HfTTZDzgE", // Nível 3 - Pode passar a mão
-        "CQACAgEAAxkBAAEDFQFpdudFCfj8vtqc0F-1qGXdQjbXpAAC7gcAArUkuEdIEJcBbrFhWTgE", // Nível 4 - Gemido 01
-        "CQACAgEAAxkBAAEDFQNpdudu0U7FD4OeKn_T30VFFe3nCQAC7wcAArUkuEdHJ4R30JgtqTgE", // Nível 4 - Gemido 02
-        "CQACAgEAAxkBAAEDFQVpdueiMKM1mZ8JdNEGu_6qz--0AAPwBwACtSS4Ry_TLXiTERccOAQ", // Nível 4 - É isso que tu quer
-        "CQACAgEAAxkBAAEDFQdpdufeWeV3QdU4bCs52BJEO-dvoAAC8QcAArUkuEelD64d6PLyaDgE"  // Nível 4 - Já tô toda gozada
+        "CQACAgEAAxkBAAEDFPlpduUOWbQdfAlJMsCX2M47UfcDqgAC6QcAArUkuEcxLsHNA4Sd0jgE",
+        "CQACAgEAAxkBAAEDFPtpduYi7zFJVmRkVebnM1vY_fDMhAAC6gcAArUkuEdrr5qcvymN6jgE",
+        "CQACAgEAAxkBAAEDFP1pduaWDDKZovtJsng9hi2ViQzQiwAC7AcAArUkuEfWFgsJLaJX-TgE",
+        "CQACAgEAAxkBAAEDFP9pdubX8yGC95_kwNSS-U7AOaUvkgAC7QcAArUkuEdLCA6HfTTZDzgE",
+        "CQACAgEAAxkBAAEDFQFpdudFCfj8vtqc0F-1qGXdQjbXpAAC7gcAArUkuEdIEJcBbrFhWTgE",
+        "CQACAgEAAxkBAAEDFQNpdudu0U7FD4OeKn_T30VFFe3nCQAC7wcAArUkuEdHJ4R30JgtqTgE",
+        "CQACAgEAAxkBAAEDFQVpdueiMKM1mZ8JdNEGu_6qz--0AAPwBwACtSS4Ry_TLXiTERccOAQ",
+        "CQACAgEAAxkBAAEDFQdpdufeWeV3QdU4bCs52BJEO-dvoAAC8QcAArUkuEelD64d6PLyaDgE"
       ];
 
-      // Escolhe um aleatório
       const randomFileId = audioFileIds[Math.floor(Math.random() * audioFileIds.length)];
 
-      // Envia texto curto + áudio
       await tgSendMessage(chatId, "Ah safadinho... aqui vai minha voz pra te arrepiar 😏");
 
       await fetch(`${TELEGRAM_API}/sendVoice`, {
@@ -233,15 +279,38 @@ app.post("/webhook", async (req, res) => {
 
       pushHistory(chatId, "assistant", "[Áudio enviado]");
     } else {
-      // Resposta normal em texto
       pushHistory(chatId, "assistant", reply);
       await tgSendMessage(chatId, reply);
     }
+
+    // Reseta o timer de inatividade toda vez que o usuário manda mensagem
+    resetInactivityTimer(chatId);
   } catch (e) {
     console.error("Grok error:", e.message);
     await tgSendMessage(chatId, "Hmm… algo deu errado 😌 tenta de novo pra mim");
   }
 });
+
+// ========= INATIVIDADE INTELIGENTE =========
+function resetInactivityTimer(chatId) {
+  if (inactivityTimers.has(chatId)) {
+    clearTimeout(inactivityTimers.get(chatId));
+  }
+
+  const lastSent = lastAutoMessage.get(chatId) || 0;
+  if (Date.now() - lastSent < ONE_DAY_MS) {
+    return;
+  }
+
+  const timer = setTimeout(async () => {
+    const text = getAutoMessageText(getHistory(chatId));
+    await tgSendMessage(chatId, text);
+    lastAutoMessage.set(chatId, Date.now());
+    inactivityTimers.delete(chatId);
+  }, INACTIVITY_TIMEOUT);
+
+  inactivityTimers.set(chatId, timer);
+}
 
 // ========= START =========
 const PORT = process.env.PORT || 8080;
