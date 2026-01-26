@@ -332,13 +332,23 @@ if (isVeryShort) {
     await tgTyping(chatId);
 
     try {
-      const reply = await askGrok(chatId, combinedText);
-      pushHistory(chatId, "assistant", reply);
-      await tgSendMessage(chatId, reply);
-      resetInactivityTimer(chatId);
-    } catch (e) {
-      console.error("Grok error:", e.message);
-    }
+  let reply = await askGrok(chatId, combinedText);
+
+  const hist = getHistory(chatId);
+  const lastAssistant = [...hist].reverse().find(m => m.role === "assistant")?.content;
+
+  if (lastAssistant && isTooSimilar(reply, lastAssistant)) {
+    const rewrite = `Reescreva com um jeito bem diferente, mais natural, sem repetir apelidos ou estrutura.`;
+    reply = await askGrok(chatId, combinedText + "\n\n" + rewrite);
+  }
+
+  pushHistory(chatId, "assistant", reply);
+  await tgSendMessage(chatId, reply);
+  resetInactivityTimer(chatId);
+} catch (e) {
+  console.error("Grok error:", e.message);
+}
+
   });
 
   return; // ⛔ ESSENCIAL: impede execução duplicada
