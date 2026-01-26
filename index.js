@@ -279,15 +279,25 @@ app.post("/webhook", async (req, res) => {
     short.length <= 6 ||
     ["oi", "opa", "kk", "kkk", "hmm", "aham", "sim", "não", "nao"].includes(short);
 
-  if (isVeryShort) {
-    const reactions = ["hmm…", "ei 😏", "fala…", "tô te lendo…", "kkk 😈"];
-    await tgSendMessage(
-      chatId,
-      reactions[Math.floor(Math.random() * reactions.length)]
-    );
-    resetInactivityTimer(chatId);
-    return; // ⛔ NÃO chama Grok
-  }
+  // Mensagens curtas entram no debounce para permitir respostas combinadas
+if (isVeryShort) {
+  queueUserText(chatId, text, async (combinedText) => {
+    pushHistory(chatId, "user", combinedText);
+
+    await tgTyping(chatId);
+
+    try {
+      const reply = await askGrok(chatId, combinedText);
+      pushHistory(chatId, "assistant", reply);
+      await tgSendMessage(chatId, reply);
+      resetInactivityTimer(chatId);
+    } catch (e) {
+      console.error("Grok error:", e.message);
+    }
+  });
+
+  return;
+}
 
   console.log("🔥 UPDATE:", chatId, text);
 
