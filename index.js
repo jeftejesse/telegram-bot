@@ -233,6 +233,7 @@ app.get("/", (_, res) => res.send("✅ Bot online"));
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
+  // ====== VALIDA SECRET ======
   if (WEBHOOK_SECRET) {
     const header = req.get("X-Telegram-Bot-Api-Secret-Token") || "";
     if (header !== WEBHOOK_SECRET) {
@@ -244,11 +245,12 @@ app.post("/webhook", async (req, res) => {
   const msg = req.body?.message;
   if (!msg) return;
 
-    // ========= CAPTURA DE FILE_ID (para cadastrar áudios no SEU bot) =========
-  // Se você mandar um áudio/voz para o seu bot, ele responde com o file_id correto.
+  const chatId = msg.chat.id;
+
+  // ========= CAPTURA DE FILE_ID (para cadastrar áudios no SEU bot) =========
   if (msg.voice?.file_id) {
     await tgSendMessage(
-      msg.chat.id,
+      chatId,
       "✅ VOICE file_id (use no sendVoice):\n" + msg.voice.file_id
     );
     return;
@@ -256,7 +258,7 @@ app.post("/webhook", async (req, res) => {
 
   if (msg.audio?.file_id) {
     await tgSendMessage(
-      msg.chat.id,
+      chatId,
       "✅ AUDIO file_id (use no sendAudio):\n" + msg.audio.file_id
     );
     return;
@@ -264,37 +266,39 @@ app.post("/webhook", async (req, res) => {
 
   if (msg.document?.file_id) {
     await tgSendMessage(
-      msg.chat.id,
-      "✅ DOCUMENT file_id (se você enviou mp3 como arquivo):\n" + msg.document.file_id
+      chatId,
+      "✅ DOCUMENT file_id (se você enviou mp3 como arquivo):\n" +
+        msg.document.file_id
     );
     return;
   }
-  
-  const chatId = msg.chat.id;
+
   const text = (msg.text || "").trim();
   if (!text) return;
 
+  // ====== RESPOSTAS CURTAS IMEDIATAS ======
   const short = text.toLowerCase();
-const isVeryShort =
-  short.length <= 6 ||
-  ["oi", "opa", "kk", "kkk", "hmm", "aham", "sim", "não", "nao"].includes(short);
+  const isVeryShort =
+    short.length <= 6 ||
+    ["oi", "opa", "kk", "kkk", "hmm", "aham", "sim", "não", "nao"].includes(short);
 
-if (isVeryShort) {
-  const reactions = ["hmm…", "ei 😏", "fala…", "tô te lendo…", "kkk 😈"];
-  await tgSendMessage(
-    chatId,
-    reactions[Math.floor(Math.random() * reactions.length)]
-  );
-  resetInactivityTimer(chatId);
-  return; // ⛔ IMPORTANTE: impede chamar o Grok
-}
+  if (isVeryShort) {
+    const reactions = ["hmm…", "ei 😏", "fala…", "tô te lendo…", "kkk 😈"];
+    await tgSendMessage(
+      chatId,
+      reactions[Math.floor(Math.random() * reactions.length)]
+    );
+    resetInactivityTimer(chatId);
+    return; // ⛔ NÃO chama Grok
+  }
 
   console.log("🔥 UPDATE:", chatId, text);
 
+  // ====== COMANDOS ======
   if (text === "/start") {
     await tgSendMessage(
       chatId,
-      "Oi amorzinho... 😊\n\nAntes de começar, um aviso rápido: isso aqui é papo adulto, safado e consensual só entre nós dois. Vai rolar flerte quente, provocação e tesão sem filtro, mas tudo no seu ritmo. Se não for +18 ou se não curtir esse clima, é só digitar /stop a qualquer momento e eu paro na hora, tá bom?\n\nSe você tá dentro e quer continuar... me diz o que tá passando nessa cabecinha fofa 😏"
+      "Oi amorzinho... 😊\n\nAntes de começar, um aviso rápido: aqui é papo adulto, safado e consensual só entre nós dois tá bom? \n\nSe quiser parar, digita /stop.\n\nAgora me diz… o que tá passando nessa cabecinha fofa? 😏"
     );
     return;
   }
@@ -302,7 +306,7 @@ if (isVeryShort) {
   if (text === "/stop") {
     await tgSendMessage(
       chatId,
-      "Tudo bem, docinho... 😊 Eu paro por aqui. Se quiser voltar algum dia, é só me chamar de novo. Beijo gostoso 💕"
+      "Tudo bem, docinho... 😊 paro por aqui. Quando quiser voltar, é só me chamar 💕"
     );
 
     memory.delete(chatId);
@@ -319,85 +323,86 @@ if (isVeryShort) {
   await tgTyping(chatId);
 
   if (!XAI_API_KEY) {
-    await tgSendMessage(chatId, "Tô aqui 😌 mas minha parte mais ousada ainda tá dormindo…");
+    await tgSendMessage(
+      chatId,
+      "Tô aqui 😌 mas minha parte mais ousada ainda tá dormindo…"
+    );
     return;
   }
 
- // ⏳ Agrupa mensagens e responde só quando o usuário parar de enviar
-queueUserText(chatId, text, async (combinedText) => {
-  // salva tudo como uma única entrada
-  pushHistory(chatId, "user", combinedText);
+  // ====== DEBOUNCE / AGRUPADOR ======
+  queueUserText(chatId, text, async (combinedText) => {
+    pushHistory(chatId, "user", combinedText);
 
-  await tgTyping(chatId);
+    await tgTyping(chatId);
 
-  try {
-    let reply = await askGrok(chatId, combinedText);
+    try {
+      let reply = await askGrok(chatId, combinedText);
 
-    if (reply.length > 220) {
-      reply = reply.split(".").slice(0, 2).join(".") + "…";
-    }
-
-    const lowerText = combinedText.toLowerCase();
-    const isAudioRequest =
-      lowerText.includes("áudio") ||
-      lowerText.includes("audio") ||
-      lowerText.includes("voz") ||
-      lowerText.includes("fala") ||
-      lowerText.includes("ouvir") ||
-      lowerText.includes("escutar") ||
-      lowerText.includes("manda voz") ||
-      lowerText.includes("manda áudio");
-
-    if (isAudioRequest) {
-      const audioFileIds = [
-        "CQACAgEAAxkBAAIBTml3CWDuY7HrHEOQg5_ChH6TxQQ1AALJBwACsSm4R3nmZbXEiRsAATgE",
-        "CQACAgEAAxkBAAIBUGl3Cbipx2Zul8pbTwbRltKwc-dwAALMBwACsSm4R14J8f6iCNChOAQ",
-        "CQACAgEAAxkBAAIBUml3CdwrQLx2Z4YAAfaWxWoWQV6vWwACzQcAArEpuEdHz1sFrnFqyDgE",
-        "CQACAgEAAxkBAAIBVGl3CgGv1cW7X42pksqgGUhSN8iWAALOBwACsSm4R_LS9H3lsyeSOAQ",
-        "CQACAgEAAxkBAAIBVml3CiTKe1Sw2NfUkve9MYdOoJJoAALPBwACsSm4R8wpCNW5B-QXOAQ",
-        "CQACAgEAAxkBAAIBWGl3Cj1N7PVVPic5Th8CLucF_0MtAALQBwACsSm4R98viLnVimiqOAQ",
-        "CQACAgEAAxkBAAIBWml3CmAyJPfn-evQ3A27CEdekO6YAALRBwACsSm4R-G6F34rsF5QOAQ",
-        "CQACAgEAAxkBAAIBXGl3CnerLbuQfkKxIoQKaHfKdm_vAALSBwACsSm4R_nUmEA-HuVFOAQ",
-      ];
-
-      const randomFileId =
-        audioFileIds[Math.floor(Math.random() * audioFileIds.length)];
-
-      await tgSendMessage(
-        chatId,
-        "Ah safadinho... aqui vai minha voz pra te arrepiar"
-      );
-
-      const r = await fetch(TELEGRAM_API + "/sendAudio", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: chatId,
-          audio: randomFileId,
-        }),
-      });
-
-      const j = await r.json().catch(() => null);
-      if (!r.ok || !j?.ok) {
-        console.error("❌ Telegram sendAudio falhou:", r.status, j);
-      } else {
-        console.log("✅ Telegram sendAudio OK");
+      if (reply.length > 220) {
+        reply = reply.split(".").slice(0, 2).join(".") + "…";
       }
 
-      pushHistory(chatId, "assistant", "[Áudio enviado]");
-    } else {
-      pushHistory(chatId, "assistant", reply);
-      await tgSendMessage(chatId, reply);
+      const lowerText = combinedText.toLowerCase();
+      const isAudioRequest =
+        lowerText.includes("áudio") ||
+        lowerText.includes("audio") ||
+        lowerText.includes("voz") ||
+        lowerText.includes("fala") ||
+        lowerText.includes("ouvir") ||
+        lowerText.includes("escutar") ||
+        lowerText.includes("manda voz") ||
+        lowerText.includes("manda áudio");
+
+      if (isAudioRequest) {
+        const audioFileIds = [
+          "CQACAgEAAxkBAAIBTml3CWDuY7HrHEOQg5_ChH6TxQQ1AALJBwACsSm4R3nmZbXEiRsAATgE",
+          "CQACAgEAAxkBAAIBUGl3Cbipx2Zul8pbTwbRltKwc-dwAALMBwACsSm4R14J8f6iCNChOAQ",
+          "CQACAgEAAxkBAAIBUml3CdwrQLx2Z4YAAfaWxWoWQV6vWwACzQcAArEpuEdHz1sFrnFqyDgE",
+          "CQACAgEAAxkBAAIBVGl3CgGv1cW7X42pksqgGUhSN8iWAALOBwACsSm4R_LS9H3lsyeSOAQ",
+          "CQACAgEAAxkBAAIBVml3CiTKe1Sw2NfUkve9MYdOoJJoAALPBwACsSm4R8wpCNW5B-QXOAQ",
+          "CQACAgEAAxkBAAIBWGl3Cj1N7PVVPic5Th8CLucF_0MtAALQBwACsSm4R98viLnVimiqOAQ",
+          "CQACAgEAAxkBAAIBWml3CmAyJPfn-evQ3A27CEdekO6YAALRBwACsSm4R-G6F34rsF5QOAQ",
+          "CQACAgEAAxkBAAIBXGl3CnerLbuQfkKxIoQKaHfKdm_vAALSBwACsSm4R_nUmEA-HuVFOAQ",
+        ];
+
+        const randomFileId =
+          audioFileIds[Math.floor(Math.random() * audioFileIds.length)];
+
+        await tgSendMessage(
+          chatId,
+          "Ah safadinho... aqui vai minha voz pra te arrepiar 😈"
+        );
+
+        const r = await fetch(TELEGRAM_API + "/sendAudio", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: chatId,
+            audio: randomFileId,
+          }),
+        });
+
+        const j = await r.json().catch(() => null);
+        if (!r.ok || !j?.ok) {
+          console.error("❌ Telegram sendAudio falhou:", r.status, j);
+        }
+
+        pushHistory(chatId, "assistant", "[Áudio enviado]");
+      } else {
+        pushHistory(chatId, "assistant", reply);
+        await tgSendMessage(chatId, reply);
+      }
+
+      resetInactivityTimer(chatId);
+    } catch (e) {
+      console.error("Grok error:", e.message);
+      await tgSendMessage(chatId, "Hmm… algo deu errado 😌 tenta de novo");
     }
+  });
 
-    resetInactivityTimer(chatId);
-  } catch (e) {
-    console.error("Grok error:", e.message);
-    await tgSendMessage(chatId, "Hmm… algo deu errado 😌 tenta de novo pra mim");
-  }
+  return; // ⛔ RETURN FINAL — FECHA O WEBHOOK CORRETAMENTE
 });
-
-return; // ⛔ ESSENCIAL: impede o fluxo antigo de continuar
 
 // ========= START =========
 const PORT = process.env.PORT || 8080;
