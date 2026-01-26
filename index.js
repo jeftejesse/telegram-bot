@@ -115,12 +115,6 @@ VARIAÇÃO DE TAMANHO (OBRIGATÓRIO):
 Agora vai… me deixa toda derretida com o que tu vai falar 💕
 `.trim();
 
-  const messages = [
-    { role: "system", content: systemPrompt },
-    ...getHistory(chatId),
-    { role: "user", content: userText },
-  ];
-
   const res = await fetch("https://api.x.ai/v1/chat/completions", {
   method: "POST",
   headers: {
@@ -128,12 +122,13 @@ Agora vai… me deixa toda derretida com o que tu vai falar 💕
     Authorization: "Bearer " + XAI_API_KEY,
   },
   body: JSON.stringify({
-  model: "grok-4-latest",
-  messages,
-  temperature: 1.1,
-  top_p: 0.9,
-  max_tokens: 60
-}),
+    model: "grok-4-latest",
+    messages,
+    temperature: 1.1,
+    top_p: 0.9,
+    max_tokens: 60
+  })
+});
 
 const data = await res.json();
 
