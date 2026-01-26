@@ -27,6 +27,51 @@ function pushHistory(chatId, role, content) {
   h.push({ role, content });
   while (h.length > MAX_MESSAGES) h.shift();
 }
+function pushHistory(chatId, role, content) {
+  const h = getHistory(chatId);
+  h.push({ role, content });
+  while (h.length > MAX_MESSAGES) h.shift();
+}
+
+// ========= ANTI-REPETIÇÃO / HUMANIZAÇÃO =========
+function normalizeText(s = "") {
+  return s
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, "")
+    .trim();
+}
+
+function isTooSimilar(a, b) {
+  const na = normalizeText(a);
+  const nb = normalizeText(b);
+  if (!na || !nb) return false;
+
+  // Considera repetitivo se uma resposta “parece a outra”
+  if (na.length > 25 && (na.includes(nb) || nb.includes(na))) return true;
+
+  return false;
+}
+
+// ========= ANTI-REPETIÇÃO / ANTI-ROBOT =========
+function normalizeText(s = "") {
+  return s
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, "")
+    .trim();
+}
+
+function isTooSimilar(a, b) {
+  const na = normalizeText(a);
+  const nb = normalizeText(b);
+  if (!na || !nb) return false;
+
+  // considera “parecido demais” se um contiver o outro e forem longos
+  if (na.length > 25 && (na.includes(nb) || nb.includes(na))) return true;
+
+  return false;
+}
 
 // ========= TELEGRAM =========
 async function tgSendMessage(chatId, text) {
@@ -370,6 +415,15 @@ if (isVeryShort) {
 
     try {
       let reply = await askGrok(chatId, combinedText);
+
+// Se estiver muito parecido com a última resposta, pede reescrita 1x
+const hist = getHistory(chatId);
+const lastAssistant = [...hist].reverse().find(m => m.role === "assistant")?.content;
+
+if (lastAssistant && isTooSimilar(reply, lastAssistant)) {
+  const rewrite = `Reescreva com um jeito bem diferente, sem apelidos repetidos e sem reticências. Mantenha a intenção, mas mude totalmente o estilo.`;
+  reply = await askGrok(chatId, combinedText + "\n\n" + rewrite);
+}
 
       if (reply.length > 220) {
         reply = reply.split(".").slice(0, 2).join(".") + "…";
