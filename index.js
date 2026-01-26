@@ -1,4 +1,6 @@
 import express from "express";
+import fetch from "node-fetch";
+
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 
@@ -6,6 +8,7 @@ app.use(express.json({ limit: "2mb" }));
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const XAI_API_KEY = process.env.XAI_API_KEY || "";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
+
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 if (!BOT_TOKEN) console.warn("⚠️ BOT_TOKEN não definido");
@@ -98,6 +101,8 @@ REGRA DE ÁUDIO (nova):
 Agora vai… me deixa toda derretida com o que tu vai falar 💕
   `;
 
+  `.trim();
+
   const messages = [
     { role: "system", content: systemPrompt },
     ...getHistory(chatId),
@@ -133,16 +138,31 @@ Agora vai… me deixa toda derretida com o que tu vai falar 💕
 // ========= INATIVIDADE INTELIGENTE (versão avançada) =========
 const inactivityTimers = new Map();
 const lastAutoMessage = new Map(); // chatId → timestamp do último auto-message
-
 const INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 60 minutos
 const ONE_DAY_MS = 24 * 60 * 60 * 1000; // 1 dia
 
 function getAutoMessageText(history) {
-  const lastMsgs = history.slice(-4).map(m => m.content.toLowerCase()).join(' '); // últimas 4 msgs
+  const lastMsgs = history
+    .slice(-4)
+    .map((m) => (m.content || "").toLowerCase())
+    .join(" ");
 
-  if (lastMsgs.includes('molhada') || lastMsgs.includes('duro') || lastMsgs.includes('foder') || lastMsgs.includes('gozar') || lastMsgs.includes('sentar') || lastMsgs.includes('gemendo')) {
+  if (
+    lastMsgs.includes("molhada") ||
+    lastMsgs.includes("duro") ||
+    lastMsgs.includes("foder") ||
+    lastMsgs.includes("gozar") ||
+    lastMsgs.includes("sentar") ||
+    lastMsgs.includes("gemendo")
+  ) {
     return "Ei safadinho... sumiu? 😈 Tô aqui toda molhada esperando você voltar... imagina minha voz rouca te chamando pra me pegar forte... volta logo que eu tô louca de tesão 🔥";
-  } else if (lastMsgs.includes('calorzinho') || lastMsgs.includes('arrepio') || lastMsgs.includes('abraço') || lastMsgs.includes('beijo') || lastMsgs.includes('coxa')) {
+  } else if (
+    lastMsgs.includes("calorzinho") ||
+    lastMsgs.includes("arrepio") ||
+    lastMsgs.includes("abraço") ||
+    lastMsgs.includes("beijo") ||
+    lastMsgs.includes("coxa")
+  ) {
     return "Amorzinho... cadê você? 😏 Tô sentindo um friozinho gostoso na barriga de saudade... volta pra gente continuar esse papo quentinho... tô mordendo o lábio aqui pensando em você 💕";
   } else {
     return "Ei docinho... sumiu? 😊 Tô aqui sorrindo sozinha esperando sua mensagem... me conta o que tá acontecendo aí que eu tô curiosa... volta logo, tá bom? 🥰";
@@ -206,11 +226,14 @@ app.post("/webhook", async (req, res) => {
       chatId,
       "Tudo bem, docinho... 😊 Eu paro por aqui. Se quiser voltar algum dia, é só me chamar de novo. Beijo gostoso 💕"
     );
+
     memory.delete(chatId);
+
     if (inactivityTimers.has(chatId)) {
       clearTimeout(inactivityTimers.get(chatId));
       inactivityTimers.delete(chatId);
     }
+
     lastAutoMessage.delete(chatId);
     return;
   }
@@ -218,10 +241,7 @@ app.post("/webhook", async (req, res) => {
   await tgTyping(chatId);
 
   if (!XAI_API_KEY) {
-    await tgSendMessage(
-      chatId,
-      "Tô aqui 😌 mas minha parte mais ousada ainda tá dormindo…"
-    );
+    await tgSendMessage(chatId, "Tô aqui 😌 mas minha parte mais ousada ainda tá dormindo…");
     return;
   }
 
@@ -236,14 +256,14 @@ app.post("/webhook", async (req, res) => {
 
     const lowerText = text.toLowerCase();
     const isAudioRequest =
-      lowerText.includes('áudio') ||
-      lowerText.includes('audio') ||
-      lowerText.includes('voz') ||
-      lowerText.includes('fala') ||
-      lowerText.includes('ouvir') ||
-      lowerText.includes('escutar') ||
-      lowerText.includes('manda voz') ||
-      lowerText.includes('manda áudio');
+      lowerText.includes("áudio") ||
+      lowerText.includes("audio") ||
+      lowerText.includes("voz") ||
+      lowerText.includes("fala") ||
+      lowerText.includes("ouvir") ||
+      lowerText.includes("escutar") ||
+      lowerText.includes("manda voz") ||
+      lowerText.includes("manda áudio");
 
     if (isAudioRequest) {
       const audioFileIds = [
@@ -254,7 +274,7 @@ app.post("/webhook", async (req, res) => {
         "CQACAgEAAxkBAAEDFQFpdudFCfj8vtqc0F-1qGXdQjbXpAAC7gcAArUkuEdIEJcBbrFhWTgE",
         "CQACAgEAAxkBAAEDFQNpdudu0U7FD4OeKn_T30VFFe3nCQAC7wcAArUkuEdHJ4R30JgtqTgE",
         "CQACAgEAAxkBAAEDFQVpdueiMKM1mZ8JdNEGu_6qz--0AAPwBwACtSS4Ry_TLXiTERccOAQ",
-        "CQACAgEAAxkBAAEDFQdpdufeWeV3QdU4bCs52BJEO-dvoAAC8QcAArUkuEelD64d6PLyaDgE"
+        "CQACAgEAAxkBAAEDFQdpdufeWeV3QdU4bCs52BJEO-dvoAAC8QcAArUkuEelD64d6PLyaDgE",
       ];
 
       const randomFileId = audioFileIds[Math.floor(Math.random() * audioFileIds.length)];
@@ -262,12 +282,12 @@ app.post("/webhook", async (req, res) => {
       await tgSendMessage(chatId, "Ah safadinho... aqui vai minha voz pra te arrepiar 😏");
 
       await fetch(`${TELEGRAM_API}/sendVoice`, {
-        method: 'POST',
+        method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chat_id: chatId,
-          voice: randomFileId
-        })
+          voice: randomFileId,
+        }),
       });
 
       pushHistory(chatId, "assistant", "[Áudio enviado]");
@@ -284,29 +304,6 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// ========= INATIVIDADE INTELIGENTE =========
-function resetInactivityTimer(chatId) {
-  if (inactivityTimers.has(chatId)) {
-    clearTimeout(inactivityTimers.get(chatId));
-  }
-
-  const lastSent = lastAutoMessage.get(chatId) || 0;
-  if (Date.now() - lastSent < ONE_DAY_MS) {
-    return;
-  }
-
-  const timer = setTimeout(async () => {
-    const text = getAutoMessageText(getHistory(chatId));
-    await tgSendMessage(chatId, text);
-    lastAutoMessage.set(chatId, Date.now());
-    inactivityTimers.delete(chatId);
-  }, INACTIVITY_TIMEOUT);
-
-  inactivityTimers.set(chatId, timer);
-}
-
 // ========= START =========
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () =>
-  console.log("🚀 Bot rodando na porta", PORT)
-);
+app.listen(PORT, () => console.log("🚀 Bot rodando na porta", PORT));
