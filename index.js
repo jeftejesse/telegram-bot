@@ -206,8 +206,8 @@ const pendingText = new Map();        // chatId -> string
 const pendingTimer = new Map();       // chatId -> timeout
 const pendingCount = new Map();       // chatId -> quantas msgs chegaram na janela
 
-const FAST_MS = 450;     // resposta rápida quando parece isolada
-const BURST_MS = 1200;   // espera maior quando vem sequência
+const FAST_MS = 1000;   // 1 segundo (bem mais humano)
+const BURST_MS = 1500;  // 1,5s para juntar sequência
 
 function queueUserText(chatId, text, onFlush) {
   const prev = pendingText.get(chatId) || "";
