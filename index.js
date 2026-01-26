@@ -278,12 +278,12 @@ app.post("/webhook", async (req, res) => {
 
       await tgSendMessage(chatId, "Ah safadinho... aqui vai minha voz pra te arrepiar 😏");
 
-      const r = await fetch(TELEGRAM_API + "/sendVoice", {
+      const r = await fetch(TELEGRAM_API + "/sendAudio", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
     chat_id: chatId,
-    voice: randomFileId,
+    audio: randomFileId,
   }),
 });
 
