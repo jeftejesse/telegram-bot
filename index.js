@@ -99,7 +99,7 @@ REGRA DE ÁUDIO (nova):
 - Em respostas normais (sem pedido de áudio), responda só em texto.
 
 Agora vai… me deixa toda derretida com o que tu vai falar 💕
-  `.trim();
+`.trim();
 
   const messages = [
     { role: "system", content: systemPrompt },
