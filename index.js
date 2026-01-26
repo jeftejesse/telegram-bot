@@ -27,11 +27,6 @@ function pushHistory(chatId, role, content) {
   h.push({ role, content });
   while (h.length > MAX_MESSAGES) h.shift();
 }
-function pushHistory(chatId, role, content) {
-  const h = getHistory(chatId);
-  h.push({ role, content });
-  while (h.length > MAX_MESSAGES) h.shift();
-}
 
 // ========= ANTI-REPETIÇÃO / HUMANIZAÇÃO =========
 function normalizeText(s = "") {
@@ -48,26 +43,6 @@ function isTooSimilar(a, b) {
   if (!na || !nb) return false;
 
   // Considera repetitivo se uma resposta “parece a outra”
-  if (na.length > 25 && (na.includes(nb) || nb.includes(na))) return true;
-
-  return false;
-}
-
-// ========= ANTI-REPETIÇÃO / ANTI-ROBOT =========
-function normalizeText(s = "") {
-  return s
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .replace(/[^\p{L}\p{N}\s]/gu, "")
-    .trim();
-}
-
-function isTooSimilar(a, b) {
-  const na = normalizeText(a);
-  const nb = normalizeText(b);
-  if (!na || !nb) return false;
-
-  // considera “parecido demais” se um contiver o outro e forem longos
   if (na.length > 25 && (na.includes(nb) || nb.includes(na))) return true;
 
   return false;
