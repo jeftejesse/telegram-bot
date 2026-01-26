@@ -128,14 +128,12 @@ Agora vai… me deixa toda derretida com o que tu vai falar 💕
     Authorization: "Bearer " + XAI_API_KEY,
   },
   body: JSON.stringify({
-    model: "grok-4-latest",
-    messages,
-    temperature: 1.1,
-    top_p: 0.9,
-    max_tokens: 60,          // VARIAÇÃO DE TAMANHO controlada no PROMPT
-
-  }),
-});
+  model: "grok-4-latest",
+  messages,
+  temperature: 1.1,
+  top_p: 0.9,
+  max_tokens: 60
+}),
 
 const data = await res.json();
 
