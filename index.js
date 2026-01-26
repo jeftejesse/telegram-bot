@@ -96,7 +96,7 @@ Varie o tom, o ritmo e o jeito de responder.
 A conversa deve fluir como um papo gostoso, curioso e envolvente, deixando sempre vontade de continuar.
 
 Agora vai… me deixa toda derretida com o que tu vai falar 💕 
-.trim();
+`.trim();
 
   const messages = [
     { role: "system", content: systemPrompt },
