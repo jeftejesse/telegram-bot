@@ -133,8 +133,7 @@ Agora vai… me deixa toda derretida com o que tu vai falar 💕
     temperature: 1.1,
     top_p: 0.9,
     max_tokens: 60,          // VARIAÇÃO DE TAMANHO controlada no PROMPT
-    presence_penalty: 0.4,
-    frequency_penalty: 0.6,
+
   }),
 });
 
