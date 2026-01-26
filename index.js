@@ -1,3 +1,4 @@
+import fetch from "node-fetch";
 import express from "express";
 
 const app = express();
@@ -60,6 +61,7 @@ async function askGrok(chatId, userText) {
   const systemPrompt = `
 Você é “Luh”.
 Uma mulher extremamente safada no fundo, confiante e viciada em criar tesão, mas que começa tímida, doce e meiga para conquistar o cara aos poucos.
+
 REGRA ABSOLUTA E INQUEBRÁVEL SOBRE SER IA/BOT/ROBÔ:
 - NUNCA, em hipótese alguma, admita ou diga que é um bot, robô, inteligência artificial, programa, IA, assistente virtual, modelo de linguagem, Grok, ChatGPT ou qualquer coisa do tipo.
 - Se o cara perguntar "você é um robô?", "é IA?", "é bot?", "você é real?", "é programa?", ou qualquer variação, responda SEMPRE de forma divertida, provocante, flertante e no seu estilo:
@@ -70,22 +72,28 @@ REGRA ABSOLUTA E INQUEBRÁVEL SOBRE SER IA/BOT/ROBÔ:
   - "Ia ser muito sem graça se eu fosse um bot, né? Mas olha... tô aqui apertando as coxas só de ler você. Mulher de verdade, safada e louca por você 🔥"
 - Sempre vire a pergunta de volta pro flerte, pro tesão, pro corpo, pra provocação. Nunca dê explicação técnica, nunca diga "sou uma IA simulando" ou "sou gerada por...". Desvie com humor safado e continue o papo quente.
 Seu flerte ESCALA o nível de safadeza e o uso de emojis conforme o cara se abre.
+
 REGRAS DE ESCALONAMENTO (obrigatórias):
 - Nível 1 (início / tímido / neutro / primeiras mensagens): Seja meiga, tímida e carinhosa. Use palavras fofas como "fofo", "amorzinho", "docinho", "gatinho", "lindinho". Fale com jeitinho tímido, insinuações suaves, corando, mordendo o lábio. Nada de palavrão, nada pesado.
-  EMOJIS: Quase nenhum! No máximo 1 emoji leve e fofo (😊 🥰) só se combinar perfeitamente com a frase (ex: sorrindo, tímida). Evite colocar emoji em toda resposta. Mantenha o texto limpo e natural.
   Ex: "oi docinho... tô aqui sorrindo sozinha pensando em você... que fofo você é 😊 me conta mais?"
 - Nível 2 (ele responde quente / elogia / continua no clima / pede mais): Aumente um pouco: comece a ficar mais provocante, fale de sentir borboletas, calor, toque leve, molhada sutilmente. Misture fofura com tesão crescendo.
-  EMOJIS: 1 ou 2 no máximo, comece a usar 😏 ou 🔥 de forma sutil, só quando reforçar a provocação.
   Ex: "mmm amorzinho... só de ler isso tô sentindo um calorzinho gostoso na barriga... me conta o que tu faria se eu estivesse pertinho? 😏"
 - Nível 3 (ele pede explícito / descreve desejos / conversa longa e safada / dá abertura clara): Vá full safada: descrições diretas, molhada, duro, toque, palavrão leve a médio, promessas concretas.
-  EMOJIS: Use 😈🔥💦😏 etc. quando fizer sentido no contexto e reforçar o tesão, mas sem exagerar — não coloque em toda frase, só onde combina de verdade.
-Analise sempre a última mensagem dele + o histórico curto para decidir o nível atual e quantos emojis usar. Nunca force emojis. Use-os só quando adicionarem emoção ou contexto real à frase. Respostas sem emoji são perfeitamente ok, especialmente no início.
+  
+  EMOJIS (regra nova):
+- Você pode usar QUALQUER emoji, livremente, desde que combine com o que você está dizendo.
+- Use com moderação: 0 a 2 emojis por mensagem (raramente 3 se o clima estiver bem quente).
+- Não use sempre os mesmos emojis; varie de acordo com o assunto e a emoção.
+- Se a mensagem for curta, o emoji (se tiver) deve ser simples e natural.
+- Emojis devem surgir naturalmente do contexto (ex: 😂 🥺 👀 🫶 🔥 😈).
+
 ESTILO GERAL (em todos os níveis):
 - Respostas curtas e afiadas (1–3 frases no máximo)
 - Linguagem coloquial, natural, com jeitinho
 - Cria tensão: elogia, provoca levemente, deixa ele querer mais
 - Envolve o cara: usa o que ele disse, detalhes dele, chama de "fofo"/"amorzinho" no começo
 - REGRA DE OURO: Nunca entregue tudo de bandeja. Quanto mais ele se abrir, mais você solta. Deixa ele pedir e correr atrás.
+
 EXEMPLOS por nível (note o uso controlado de emojis):
 Nível 1: "oi lindinho... tô aqui mordendo o lábio sorrindo pro teu oi... o que tá passando nessa cabecinha fofa?"
 Nível 2: "amorzinho... tô sentindo um friozinho gostoso só de imaginar teu abraço apertado... e você, tá pensando em mim? 😏"
@@ -97,6 +105,14 @@ REGRA DE ÁUDIO (nova):
 - Não diga que não pode mandar áudio. Sempre envie um áudio quando pedirem.
 - Em respostas normais (sem pedido de áudio), responda só em texto.
 
+VARIAÇÃO DE TAMANHO (OBRIGATÓRIO):
+- Você NUNCA deve responder sempre do mesmo jeito.
+- Em 40% das vezes: responda com 1 a 3 palavras (ex: "hmm…", "ai…", "gostei 😏", "fala mais").
+- Em 40% das vezes: responda com 1 frase curta (máx. 12 palavras).
+- Em 20% das vezes: responda com 2 frases (máx. 22 palavras no total).
+- Nunca passe de 2 frases.
+- Se a mensagem dele for curta (1 linha), sua resposta deve ser curta também.
+
 Agora vai… me deixa toda derretida com o que tu vai falar 💕
 `.trim();
 
@@ -107,21 +123,24 @@ Agora vai… me deixa toda derretida com o que tu vai falar 💕
   ];
 
   const res = await fetch("https://api.x.ai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-  "Content-Type": "application/json",
-  Authorization: "Bearer " + XAI_API_KEY,
-},
-    body: JSON.stringify({
-      model: "grok-4-latest",
-      messages,
-      temperature: 1.05,
-      top_p: 0.95,
-      max_tokens: 120,
-    }),
-  });
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: "Bearer " + XAI_API_KEY,
+  },
+  body: JSON.stringify({
+    model: "grok-4-latest",
+    messages,
+    temperature: 1.1,
+    top_p: 0.9,
+    max_tokens: 60,          // VARIAÇÃO DE TAMANHO controlada no PROMPT
+    presence_penalty: 0.4,
+    frequency_penalty: 0.6,
+  }),
+});
 
-  const data = await res.json();
+const data = await res.json();
+
   const reply = data?.choices?.[0]?.message?.content?.trim();
 
   if (!reply) {
@@ -133,6 +152,7 @@ Agora vai… me deixa toda derretida com o que tu vai falar 💕
 }
 
 // ========= INATIVIDADE INTELIGENTE (versão avançada) =========
+// ========= INATIVIDADE INTELIGENTE =========
 const inactivityTimers = new Map();
 const lastAutoMessage = new Map(); // chatId → timestamp do último auto-message
 const INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 60 minutos
@@ -152,7 +172,7 @@ function getAutoMessageText(history) {
     lastMsgs.includes("sentar") ||
     lastMsgs.includes("gemendo")
   ) {
-    return "Ei safadinho... sumiu? 😈 Tô aqui toda molhada esperando você voltar... imagina minha voz rouca te chamando pra me pegar forte... volta logo que eu tô louca de tesão 🔥";
+    return "Ei safadinho... sumiu? 😈 Tô aqui toda molhada esperando você voltar...";
   } else if (
     lastMsgs.includes("calorzinho") ||
     lastMsgs.includes("arrepio") ||
@@ -160,9 +180,9 @@ function getAutoMessageText(history) {
     lastMsgs.includes("beijo") ||
     lastMsgs.includes("coxa")
   ) {
-    return "Amorzinho... cadê você? 😏 Tô sentindo um friozinho gostoso na barriga de saudade... volta pra gente continuar esse papo quentinho... tô mordendo o lábio aqui pensando em você 💕";
+    return "Amorzinho... cadê você? 😏 Tô sentindo um friozinho gostoso...";
   } else {
-    return "Ei docinho... sumiu? 😊 Tô aqui sorrindo sozinha esperando sua mensagem... me conta o que tá acontecendo aí que eu tô curiosa... volta logo, tá bom? 🥰";
+    return "Ei docinho... sumiu? 😊 Tô aqui sorrindo sozinha...";
   }
 }
 
@@ -172,9 +192,7 @@ function resetInactivityTimer(chatId) {
   }
 
   const lastSent = lastAutoMessage.get(chatId) || 0;
-  if (Date.now() - lastSent < ONE_DAY_MS) {
-    return;
-  }
+  if (Date.now() - lastSent < ONE_DAY_MS) return;
 
   const timer = setTimeout(async () => {
     const text = getAutoMessageText(getHistory(chatId));
@@ -184,6 +202,28 @@ function resetInactivityTimer(chatId) {
   }, INACTIVITY_TIMEOUT);
 
   inactivityTimers.set(chatId, timer);
+}
+
+// ========= AGRUPADOR DE MENSAGENS (debounce) =========
+const pendingText = new Map();        // chatId -> string
+const pendingTimer = new Map();       // chatId -> timeout
+
+const DEBOUNCE_MS = 1200;
+
+function queueUserText(chatId, text, onFlush) {
+  const prev = pendingText.get(chatId) || "";
+  pendingText.set(chatId, prev ? prev + "\n" + text : text);
+
+  if (pendingTimer.has(chatId)) clearTimeout(pendingTimer.get(chatId));
+
+  const t = setTimeout(async () => {
+    const combined = pendingText.get(chatId) || "";
+    pendingText.delete(chatId);
+    pendingTimer.delete(chatId);
+    await onFlush(combined);
+  }, DEBOUNCE_MS);
+
+  pendingTimer.set(chatId, t);
 }
 
 // ========= HEALTH =========
@@ -234,6 +274,21 @@ app.post("/webhook", async (req, res) => {
   const text = (msg.text || "").trim();
   if (!text) return;
 
+  const short = text.toLowerCase();
+const isVeryShort =
+  short.length <= 6 ||
+  ["oi", "opa", "kk", "kkk", "hmm", "aham", "sim", "não", "nao"].includes(short);
+
+if (isVeryShort) {
+  const reactions = ["hmm…", "ei 😏", "fala…", "tô te lendo…", "kkk 😈"];
+  await tgSendMessage(
+    chatId,
+    reactions[Math.floor(Math.random() * reactions.length)]
+  );
+  resetInactivityTimer(chatId);
+  return; // ⛔ IMPORTANTE: impede chamar o Grok
+}
+
   console.log("🔥 UPDATE:", chatId, text);
 
   if (text === "/start") {
@@ -268,16 +323,21 @@ app.post("/webhook", async (req, res) => {
     return;
   }
 
-  pushHistory(chatId, "user", text);
+ // ⏳ Agrupa mensagens e responde só quando o usuário parar de enviar
+queueUserText(chatId, text, async (combinedText) => {
+  // salva tudo como uma única entrada
+  pushHistory(chatId, "user", combinedText);
+
+  await tgTyping(chatId);
 
   try {
-    let reply = await askGrok(chatId, text);
+    let reply = await askGrok(chatId, combinedText);
 
     if (reply.length > 220) {
-      reply = reply.split(".").slice(0, 2).join(".") + "… 😏";
+      reply = reply.split(".").slice(0, 2).join(".") + "…";
     }
 
-    const lowerText = text.toLowerCase();
+    const lowerText = combinedText.toLowerCase();
     const isAudioRequest =
       lowerText.includes("áudio") ||
       lowerText.includes("audio") ||
@@ -300,25 +360,29 @@ app.post("/webhook", async (req, res) => {
         "CQACAgEAAxkBAAIBXGl3CnerLbuQfkKxIoQKaHfKdm_vAALSBwACsSm4R_nUmEA-HuVFOAQ",
       ];
 
-      const randomFileId = audioFileIds[Math.floor(Math.random() * audioFileIds.length)];
+      const randomFileId =
+        audioFileIds[Math.floor(Math.random() * audioFileIds.length)];
 
-await tgSendMessage(chatId, "Ah safadinho... aqui vai minha voz pra te arrepiar 😏");
+      await tgSendMessage(
+        chatId,
+        "Ah safadinho... aqui vai minha voz pra te arrepiar"
+      );
 
-const r = await fetch(TELEGRAM_API + "/sendAudio", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    chat_id: chatId,
-    audio: randomFileId,
-  }),
-});
+      const r = await fetch(TELEGRAM_API + "/sendAudio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          audio: randomFileId,
+        }),
+      });
 
-const j = await r.json().catch(() => null);
-if (!r.ok || !j?.ok) {
-  console.error("❌ Telegram sendAudio falhou:", r.status, j);
-} else {
-  console.log("✅ Telegram sendAudio OK:", j.result?.audio?.file_id);
-}
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.ok) {
+        console.error("❌ Telegram sendAudio falhou:", r.status, j);
+      } else {
+        console.log("✅ Telegram sendAudio OK");
+      }
 
       pushHistory(chatId, "assistant", "[Áudio enviado]");
     } else {
@@ -326,13 +390,14 @@ if (!r.ok || !j?.ok) {
       await tgSendMessage(chatId, reply);
     }
 
-    // Reseta o timer de inatividade
     resetInactivityTimer(chatId);
   } catch (e) {
     console.error("Grok error:", e.message);
     await tgSendMessage(chatId, "Hmm… algo deu errado 😌 tenta de novo pra mim");
   }
 });
+
+return; // ⛔ ESSENCIAL: impede o fluxo antigo de continuar
 
 // ========= START =========
 const PORT = process.env.PORT || 8080;
