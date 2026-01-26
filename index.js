@@ -299,7 +299,7 @@ function resetInactivityTimer(chatId) {
 
   const lastSent = lastAutoMessage.get(chatId) || 0;
   if (Date.now() - lastSent < ONE_DAY_MS) {
-    return;
+    return; // já mandou hoje, não manda de novo
   }
 
   const timer = setTimeout(async () => {
