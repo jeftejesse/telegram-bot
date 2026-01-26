@@ -332,6 +332,11 @@ if (isVeryShort) {
     await tgTyping(chatId);
 
     try {
+          // 🧠 Comportamento humano: às vezes fica em silêncio em msg curta
+    if (Math.random() < 0.15 && combinedText.length < 10) {
+      resetInactivityTimer(chatId);
+      return;
+    }
   let reply = await askGrok(chatId, combinedText);
 
   const hist = getHistory(chatId);
