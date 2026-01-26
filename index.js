@@ -201,24 +201,34 @@ function resetInactivityTimer(chatId) {
   inactivityTimers.set(chatId, timer);
 }
 
-// ========= AGRUPADOR DE MENSAGENS (debounce) =========
+// ========= AGRUPADOR DE MENSAGENS (debounce adaptativo) =========
 const pendingText = new Map();        // chatId -> string
 const pendingTimer = new Map();       // chatId -> timeout
+const pendingCount = new Map();       // chatId -> quantas msgs chegaram na janela
 
-const DEBOUNCE_MS = 1800;
+const FAST_MS = 450;     // resposta rápida quando parece isolada
+const BURST_MS = 1200;   // espera maior quando vem sequência
 
 function queueUserText(chatId, text, onFlush) {
   const prev = pendingText.get(chatId) || "";
   pendingText.set(chatId, prev ? prev + "\n" + text : text);
 
+  const count = (pendingCount.get(chatId) || 0) + 1;
+  pendingCount.set(chatId, count);
+
   if (pendingTimer.has(chatId)) clearTimeout(pendingTimer.get(chatId));
+
+  // 1 msg: responde rápido | 2+ msgs: espera e agrupa
+  const wait = count === 1 ? FAST_MS : BURST_MS;
 
   const t = setTimeout(async () => {
     const combined = pendingText.get(chatId) || "";
     pendingText.delete(chatId);
     pendingTimer.delete(chatId);
+    pendingCount.delete(chatId);
+
     await onFlush(combined);
-  }, DEBOUNCE_MS);
+  }, wait);
 
   pendingTimer.set(chatId, t);
 }
@@ -296,7 +306,7 @@ if (isVeryShort) {
     }
   });
 
-  return;
+  return; // ⛔ ESSENCIAL: impede execução duplicada
 }
 
   console.log("🔥 UPDATE:", chatId, text);
