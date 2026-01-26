@@ -113,7 +113,7 @@ Agora vai… me deixa toda derretida com o que tu vai falar 💕
     method: "POST",
     headers: {
   "Content-Type": "application/json",
-  Authorization: `Bearer ${XAI_API_KEY}`,
+  Authorization: "Bearer " + XAI_API_KEY,
 },
     body: JSON.stringify({
       model: "grok-4-latest",
