@@ -278,7 +278,7 @@ app.post("/webhook", async (req, res) => {
 
       await tgSendMessage(chatId, "Ah safadinho... aqui vai minha voz pra te arrepiar 😏");
 
-      await fetch(TELEGRAM_API + "/sendVoice", {
+      const r = await fetch(TELEGRAM_API + "/sendVoice", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
@@ -286,6 +286,14 @@ app.post("/webhook", async (req, res) => {
     voice: randomFileId,
   }),
 });
+
+const j = await r.json().catch(() => null);
+
+if (!r.ok || !j?.ok) {
+  console.error("❌ Telegram sendVoice falhou:", r.status, j);
+} else {
+  console.log("✅ Telegram sendVoice OK:", j.result?.voice?.file_id);
+}
 
       pushHistory(chatId, "assistant", "[Áudio enviado]");
     } else {
