@@ -6,14 +6,22 @@ app.use(express.json({ limit: "2mb" }));
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const XAI_API_KEY = process.env.XAI_API_KEY || "";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
+const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN || ""; // Access Token do Mercado Pago
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || ""; // URL pública do Railway (ex: https://seu-app.up.railway.app)
+
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 if (!BOT_TOKEN) console.warn("⚠️ BOT_TOKEN não definido");
-if (!XAI_API_KEY) console.warn("⚠️ XAI_API_KEY não definido (IA desativada)");
+if (!XAI_API_KEY) console.warn("⚠️ XAI_API_KEY não definido");
+if (!MP_ACCESS_TOKEN) console.warn("⚠️ MP_ACCESS_TOKEN não definido (PIX desativado)");
+if (!PUBLIC_BASE_URL) console.warn("⚠️ PUBLIC_BASE_URL não definido (webhook MP desativado)");
 
 // ========= MEMÓRIA SIMPLES =========
 const memory = new Map();
-const MAX_MESSAGES = 20; // aumentado para melhor contexto
+const MAX_MESSAGES = 20;
+const userMsgCount = new Map(); // chatId -> total de mensagens do usuário
+const premium = new Map();      // chatId -> true se já pagou
+const pendingByPaymentId = new Map(); // paymentId -> chatId (para webhook MP)
 
 function getHistory(chatId) {
   if (!memory.has(chatId)) memory.set(chatId, []);
@@ -53,6 +61,103 @@ async function tgTyping(chatId) {
   } catch {}
 }
 
+// ========= MERCADO PAGO - CRIAR PIX =========
+async function createPixPayment({ chatId, amount = 49.90 }) {
+  if (!MP_ACCESS_TOKEN) throw new Error("MP_ACCESS_TOKEN não definido");
+  if (!PUBLIC_BASE_URL) throw new Error("PUBLIC_BASE_URL não definido");
+
+  const body = {
+    transaction_amount: amount,
+    description: "Acesso Premium - Luh",
+    payment_method_id: "pix",
+    payer: { email: "comprador@exemplo.com" },
+    external_reference: String(chatId),
+    notification_url: `${PUBLIC_BASE_URL}/mp/webhook`,
+  };
+
+  const r = await fetch("https://api.mercadopago.com/v1/payments", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  const j = await r.json();
+  if (!r.ok) {
+    console.error("MP create payment error:", r.status, j);
+    throw new Error("Falha ao criar Pix");
+  }
+
+  const paymentId = j.id;
+  const tx = j.point_of_interaction?.transaction_data;
+  const qrCode = tx?.qr_code;
+
+  pendingByPaymentId.set(String(paymentId), chatId);
+
+  return { paymentId, qrCode };
+}
+
+// ========= MERCADO PAGO - WEBHOOK =========
+app.post("/mp/webhook", async (req, res) => {
+  res.sendStatus(200);
+
+  // Só processa eventos de pagamento
+  if (req.body?.type && req.body.type !== "payment") return;
+
+  try {
+    const paymentId =
+      req.body?.data?.id ||
+      req.body?.id ||
+      req.query?.data?.id ||
+      req.query?.id;
+
+    if (!paymentId) return;
+
+    const r = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
+      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+    });
+
+    const p = await r.json();
+    if (!r.ok) {
+      console.error("MP get payment error:", r.status, p);
+      return;
+    }
+
+    const status = p.status;
+    const chatIdFromExt = p.external_reference;
+    const chatId =
+      (chatIdFromExt ? Number(chatIdFromExt) : null) ||
+      pendingByPaymentId.get(String(paymentId));
+
+    if (!chatId) return;
+
+    // ✅ PAGAMENTO APROVADO
+    if (status === "approved") {
+      premium.set(chatId, true);
+      pendingByPaymentId.delete(String(paymentId));
+
+      await tgSendMessage(
+        chatId,
+        "✅ Pagamento aprovado! Premium liberado 😈 Agora é sem limites... vem cá 🔥"
+      );
+
+      pushHistory(chatId, "assistant", `[Pagamento aprovado] paymentId=${paymentId}`);
+      resetInactivityTimer(chatId);
+      return;
+    }
+
+    // 🧹 LIMPA PIX NÃO CONCLUÍDO
+    if (["cancelled", "rejected", "expired"].includes(status)) {
+      pendingByPaymentId.delete(String(paymentId));
+      return;
+    }
+  } catch (e) {
+    console.error("mp/webhook error:", e.message);
+  }
+});
+
 // ========= GROK (xAI) =========
 async function askGrok(chatId, userText) {
   const systemPrompt = `
@@ -86,11 +191,7 @@ ESTILO HUMANO:
 - Emojis: 0–2 por mensagem, só quando fizer sentido (😏 🔥 😈 💦 🥰). Não use em todas.
 - Anti-repetição: NUNCA repita começo ou apelido seguidos. Evite clichês ("mordendo o lábio", "calorzinho") mais de 1x a cada 15 mensagens.
 - Brincadeiras: faça piadinhas leves, zoa o cara com carinho ("você é safadinho né?", "hahaha bobo").
-- Se ele mandar várias mensagens curtas seguidas (ex: "oi", "tudo bem?", "qual sua idade?"), responda tudo de uma vez de forma natural.
-
-REGRA DE PAGAMENTO:
-- Após cerca de 10 mensagens do usuário, peça pagamento de forma sensual e provocante:
-  "Hmm amorzinho… tô louca pra te mostrar o que eu faria com você, mas pra gente ir sem limites eu preciso de um pixzinho rápido 😏 Clica aqui e paga R$49,90 uma vez só: https://mpago.la/2XHK4Sk Depois me avisa que eu libero tudo 🔥"
+- Se ele mandar várias mensagens curtas seguidas, responda tudo de uma vez de forma natural.
 
 Agora vai… me deixa toda molhadinha com o que tu vai falar 😏
 `.trim();
@@ -98,7 +199,6 @@ Agora vai… me deixa toda molhadinha com o que tu vai falar 😏
   const messages = [
     { role: "system", content: systemPrompt },
     ...getHistory(chatId),
-    { role: "user", content: userText },
   ];
 
   const res = await fetch("https://api.x.ai/v1/chat/completions", {
@@ -169,7 +269,7 @@ function resetInactivityTimer(chatId) {
 // ========= HEALTH =========
 app.get("/", (_, res) => res.send("✅ Bot online"));
 
-// ========= WEBHOOK =========
+// ========= WEBHOOK TELEGRAM =========
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
@@ -204,6 +304,8 @@ app.post("/webhook", async (req, res) => {
       "Tudo bem, docinho... 😊 paro por aqui. Quando quiser voltar, é só me chamar 💕"
     );
     memory.delete(chatId);
+    userMsgCount.delete(chatId);
+    premium.delete(chatId);
     if (inactivityTimers.has(chatId)) {
       clearTimeout(inactivityTimers.get(chatId));
       inactivityTimers.delete(chatId);
@@ -223,63 +325,85 @@ app.post("/webhook", async (req, res) => {
   }
 
   pushHistory(chatId, "user", text);
+  userMsgCount.set(chatId, (userMsgCount.get(chatId) || 0) + 1);
 
   try {
+    // ========= GATILHO DE PAGAMENTO =========
+    const history = getHistory(chatId);
+    const msgCount = userMsgCount.get(chatId) || 0;
+    const lastMsgs = history.slice(-5).map(m => m.content.toLowerCase()).join(' ');
+
+    const isPaymentTime =
+  msgCount >= 10 && msgCount <= 14 &&
+  (
+    lastMsgs.includes('calorzinho') ||
+    lastMsgs.includes('coxa') ||
+    lastMsgs.includes('abraço') ||
+    lastMsgs.includes('beijo') ||
+    lastMsgs.includes('tesão') ||
+    lastMsgs.includes('gostei')
+  ) &&
+  !premium.get(chatId);
+
+    if (isPaymentTime) {
+
+  // 🚫 BLOQUEIA MÚLTIPLOS PIX ABERTOS
+  if ([...pendingByPaymentId.values()].includes(chatId)) {
+    await tgSendMessage(
+      chatId,
+      "Ei 😏 já tem um Pix te esperando… paga ele primeiro que eu te libero 🔥"
+    );
+    resetInactivityTimer(chatId);
+    return;
+  }
+
+  // ✅ CRIA NOVO PIX
+  const { paymentId, qrCode } = await createPixPayment({
+    chatId,
+    amount: 49.90
+  });
+
+  const pixText =
+    "💳 Pix pra liberar automático ✅\n\n" +
+    "📌 Copia e cola:\n" + qrCode + "\n\n" +
+    "Assim que confirmar, eu te aviso aqui 😈";
+
+  await tgSendMessage(chatId, pixText);
+  pushHistory(chatId, "assistant", `[PIX gerado] paymentId=${paymentId}`);
+  resetInactivityTimer(chatId);
+  return;
+}
+
+    // ========= FALLBACK "PAGUEI" (só educado, NÃO LIBERA PREMIUM) =========
+    const lowerText = text.toLowerCase();
+    if (/paguei|já paguei|pix feito|transferi/i.test(lowerText)) {
+      if ([...pendingByPaymentId.values()].includes(chatId)) {
+        await tgSendMessage(chatId, "Perfeito 😘 tô confirmando aqui rapidinho… aguarda só um segundinho 🔥");
+      } else {
+        await tgSendMessage(chatId, "Hmm... já pagou? 😏 Me manda o comprovante ou confirma aqui que eu libero na hora!");
+      }
+      pushHistory(chatId, "assistant", "Resposta ao 'paguei'");
+      resetInactivityTimer(chatId);
+      return;
+    }
+
+    // ========= CHAMA IA =========
     let reply = await askGrok(chatId, text);
 
     if (reply.length > 220) {
       reply = reply.split(".").slice(0, 2).join(".") + "…";
     }
 
-    // Detecta hora de pedir pagamento
-    const history = getHistory(chatId);
-    const msgCount = history.filter(m => m.role === "user").length; // só conta mensagens do usuário
-    const lastMsgs = history.slice(-5).map(m => m.content.toLowerCase()).join(' ');
-
-    const isPaymentTime = 
-      msgCount >= 10 && // após 10 mensagens do usuário
-      (lastMsgs.includes('calorzinho') || lastMsgs.includes('coxa') || lastMsgs.includes('abraço') || lastMsgs.includes('beijo') || lastMsgs.includes('tesão') || lastMsgs.includes('gostei')) && // nível 2
-      !history.some(m => m.content.includes('mpago.la')) && // não pediu ainda
-      !lastMsgs.includes('pagar') && !lastMsgs.includes('premium') && !lastMsgs.includes('pix');
-
-    if (isPaymentTime) {
-      const paymentText = "Hmm amorzinho… tô louca pra te mostrar o que eu faria com você, mas pra gente ir sem limites eu preciso de um pixzinho rápido 😏 Clica aqui e paga R$49,90 uma vez só: https://mpago.la/2XHK4Sk Depois me avisa que eu libero tudo 🔥";
-      await tgSendMessage(chatId, paymentText);
-      pushHistory(chatId, "assistant", paymentText);
-      return; // para até ele pagar
-    }
-
     pushHistory(chatId, "assistant", reply);
     await tgSendMessage(chatId, reply);
 
-    // Reseta o timer de inatividade
+    // Reseta timer
     resetInactivityTimer(chatId);
   } catch (e) {
     console.error("Grok error:", e.message);
     await tgSendMessage(chatId, "Hmm… algo deu errado 😌 tenta de novo");
   }
 });
-
-// ========= INATIVIDADE INTELIGENTE =========
-function resetInactivityTimer(chatId) {
-  if (inactivityTimers.has(chatId)) {
-    clearTimeout(inactivityTimers.get(chatId));
-  }
-
-  const lastSent = lastAutoMessage.get(chatId) || 0;
-  if (Date.now() - lastSent < ONE_DAY_MS) {
-    return;
-  }
-
-  const timer = setTimeout(async () => {
-    const text = getAutoMessageText(getHistory(chatId));
-    await tgSendMessage(chatId, text);
-    lastAutoMessage.set(chatId, Date.now());
-    inactivityTimers.delete(chatId);
-  }, INACTIVITY_TIMEOUT);
-
-  inactivityTimers.set(chatId, timer);
-}
 
 // ========= START =========
 const PORT = process.env.PORT || 8080;
