@@ -70,7 +70,7 @@ async function createPixPayment({ chatId, amount = 49.90 }) {
     transaction_amount: amount,
     description: "Acesso Premium - Luh",
     payment_method_id: "pix",
-    payer: { email: "comprador@exemplo.com" },
+    payer: { email: `user_${chatId}@luh.app` },
     external_reference: String(chatId),
     notification_url: `${PUBLIC_BASE_URL}/mp/webhook`,
   };
@@ -366,7 +366,7 @@ app.post("/webhook", async (req, res) => {
   const pixText =
   "Ai… amorzinho 😌\n\n" +
   "Tô me segurando aqui pra continuar do jeitinho que você gosta…\n\n" +
-  "Me manda um pix? Pra mim liberar todinha pra você 😈\n\n" +
+  "Me manda um pix? Já me libero todinha pra você 😈\n\n" +
   "📌 Copia e cola no seu banco:\n" +
   qrCode + "\n\n" +
   "Confirmou? 😏\n" +
