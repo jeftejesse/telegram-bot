@@ -13,7 +13,7 @@ if (!XAI_API_KEY) console.warn("⚠️ XAI_API_KEY não definido (IA desativada)
 
 // ========= MEMÓRIA SIMPLES =========
 const memory = new Map();
-const MAX_MESSAGES = 20; // aumentado pra lembrar melhor o contexto
+const MAX_MESSAGES = 20; // aumentado para melhor contexto
 
 function getHistory(chatId) {
   if (!memory.has(chatId)) memory.set(chatId, []);
