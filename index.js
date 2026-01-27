@@ -351,7 +351,7 @@ app.post("/webhook", async (req, res) => {
   if ([...pendingByPaymentId.values()].includes(chatId)) {
     await tgSendMessage(
       chatId,
-      "Ei 😏 já tem um Pix te esperando… paga ele primeiro que eu te libero 🔥"
+      "Estou esperando seu pix😏 Assim que liberar já me solto todinha pra você🔥"
     );
     resetInactivityTimer(chatId);
     return;
@@ -364,9 +364,13 @@ app.post("/webhook", async (req, res) => {
   });
 
   const pixText =
-    "💳 Pix pra liberar automático ✅\n\n" +
-    "📌 Copia e cola:\n" + qrCode + "\n\n" +
-    "Assim que confirmar, eu te aviso aqui 😈";
+  "Ai… amorzinho 😌\n\n" +
+  "Tô me segurando aqui pra continuar do jeitinho que você gosta…\n\n" +
+  "Me manda um pix? Pra mim liberar todinha pra você 😈\n\n" +
+  "📌 Copia e cola no seu banco:\n" +
+  qrCode + "\n\n" +
+  "Confirmou? 😏\n" +
+  "Eu recebo na hora… e não vou mais me segurar.";
 
   await tgSendMessage(chatId, pixText);
   pushHistory(chatId, "assistant", `[PIX gerado] paymentId=${paymentId}`);
@@ -401,7 +405,7 @@ app.post("/webhook", async (req, res) => {
     resetInactivityTimer(chatId);
   } catch (e) {
     console.error("Grok error:", e.message);
-    await tgSendMessage(chatId, "Hmm… algo deu errado 😌 tenta de novo");
+    await tgSendMessage(chatId, "Tive que sair agora, mas logo volto😌");
   }
 });
 
