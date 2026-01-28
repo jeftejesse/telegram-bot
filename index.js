@@ -331,9 +331,7 @@ Agora vai… me deixa toda derretida com o que tu vai falar 💕
       messages,
       temperature: 1.05,
       top_p: 0.9,
-      max_tokens: 90,
-      presence_penalty: 0.5,
-      frequency_penalty: 0.2,
+      max_tokens: 90
     }),
   });
 
@@ -341,13 +339,12 @@ Agora vai… me deixa toda derretida com o que tu vai falar 💕
 
   if (!resp.ok) {
     console.error("xAI error:", resp.status, data);
-    return "Hmm… deu uma travadinha aqui 😏 tenta de novo rapidinho.";
+    return "Hmm… deu uma travadinha aqui 😏 tenta de novo.";
   }
 
   let reply = data?.choices?.[0]?.message?.content?.trim();
-  if (!reply) reply = "Hmm… vem mais perto e me fala de novo 😏";
+  if (!reply) reply = "Chega mais perto e fala de novo 😏";
 
-  // corta se vier grande demais
   if (reply.length > 260) reply = reply.slice(0, 260) + "…";
 
   return reply;
