@@ -1,5 +1,4 @@
 import express from "express";
-import { fetch } from "undici";  // ← adicionado para garantir fetch confiável
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
