@@ -1,5 +1,5 @@
 import express from "express";
-import fetch from "node-fetch";  // ← adicionado (ponto 1)
+import fetch from "node-fetch";
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
@@ -10,6 +10,7 @@ const XAI_API_KEY = process.env.XAI_API_KEY || "";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
 const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN || "";
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || "";
+
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 if (!BOT_TOKEN) console.warn("⚠️ BOT_TOKEN não definido");
@@ -30,10 +31,10 @@ const DEFAULT_PLAN_ID = "p12h";
 const PENDING_TTL_MS = 2 * 60 * 60 * 1000; // 2 horas
 
 // ========= MEMÓRIA E ESTADOS =========
-const memory = new Map();
-const MAX_MESSAGES = 20;
-const userMsgCount = new Map();
-const premiumUntil = new Map();
+const memory          = new Map();
+const MAX_MESSAGES    = 20;
+const userMsgCount    = new Map();
+const premiumUntil    = new Map();
 const awaitingPayment = new Map();
 const pendingByPaymentId = new Map(); // paymentId → {chatId, planId, createdAt}
 
@@ -51,7 +52,7 @@ function pushHistory(chatId, role, content) {
 
 function isPremium(chatId) {
   const until = premiumUntil.get(chatId);
-  return !!until && Date.now() <= until;  // ← ponto 2: corrigido
+  return !!until && Date.now() <= until;
 }
 
 function clearIfExpired(chatId) {
@@ -65,24 +66,24 @@ function clearIfExpired(chatId) {
 
 function escapeMarkdown(text = "") {
   return text
-    .replace(/_/g, "\\_")
+    .replace(/_/g,  "\\_")
     .replace(/\*/g, "\\*")
     .replace(/\[/g, "\\[")
     .replace(/\]/g, "\\]")
     .replace(/\(/g, "\\(")
     .replace(/\)/g, "\\)")
-    .replace(/~/g, "\\~")
-    .replace(/`/g, "\\`")
-    .replace(/>/g, "\\>")
-    .replace(/#/g, "\\#")
+    .replace(/~/g,  "\\~")
+    .replace(/`/g,  "\\`")
+    .replace(/>/g,  "\\>")
+    .replace(/#/g,  "\\#")
     .replace(/\+/g, "\\+")
-    .replace(/-/g, "\\-")
-    .replace(/=/g, "\\=")
+    .replace(/-/g,  "\\-")
+    .replace(/=/g,  "\\=")
     .replace(/\|/g, "\\|")
-    .replace(/{/g, "\\{")
-    .replace(/}/g, "\\}")
+    .replace(/{/g,  "\\{")
+    .replace(/}/g,  "\\}")
     .replace(/\./g, "\\.")
-    .replace(/!/g, "\\!");
+    .replace(/!/g,  "\\!");
 }
 
 function planKeyboard() {
@@ -96,6 +97,7 @@ function planKeyboard() {
 }
 
 async function sendPlansMenu(chatId, introText) {
+  // Usamos texto plano aqui (mais seguro)
   await tgSendMessage(chatId, introText, {
     reply_markup: planKeyboard(),
   });
@@ -107,6 +109,7 @@ function cleanupOldPendings() {
     if (now - info.createdAt > PENDING_TTL_MS) {
       pendingByPaymentId.delete(pid);
       awaitingPayment.delete(info.chatId);
+      userMsgCount.delete(info.chatId);     // ← reset do contador também
     }
   }
 }
@@ -114,16 +117,18 @@ function cleanupOldPendings() {
 // ========= TELEGRAM =========
 async function tgSendMessage(chatId, text, extra = {}) {
   try {
+    const body = {
+      chat_id: chatId,
+      text,
+      parse_mode: extra.parse_mode || undefined,   // só usa se for explicitamente passado
+      disable_web_page_preview: true,
+      ...extra,
+    };
+
     await fetch(`${TELEGRAM_API}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text,
-        parse_mode: "MarkdownV2",          // ← ponto 3.2
-        disable_web_page_preview: true,
-        ...extra,
-      }),
+      body: JSON.stringify(body),
     });
   } catch (e) {
     console.error("Telegram error:", e.message);
@@ -229,8 +234,10 @@ app.post("/mp/webhook", async (req, res) => {
 
       await tgSendMessage(
         chatId,
-        `✅ Pagamento aprovado!\\nLiberado por *${escapeMarkdown(plan.label)}* 😈\\nVem cá… agora sem limite 🔥`
+        `✅ Pagamento aprovado!\nLiberado por *${plan.label}* 😈\nVem cá… agora sem limite 🔥`,
+        { parse_mode: "MarkdownV2" }
       );
+
       resetInactivityTimer(chatId);
       return;
     }
@@ -244,18 +251,17 @@ app.post("/mp/webhook", async (req, res) => {
   }
 });
 
-// ========= GROK (mantido igual — só omitido por brevidade) =========
+// ========= GROK (placeholder — mantenha sua implementação real) =========
 async function askGrok(chatId, userText) {
-  // ... seu prompt e chamada à API xAI permanecem iguais ...
-  // retorne a reply formatada (máx ~220 caracteres se quiser limitar)
-  const reply = "Sua resposta da IA aqui"; // placeholder
+  // ... sua lógica de chamada à API xAI ...
+  const reply = "Sua resposta da IA aqui"; // ← substitua
   return reply;
 }
 
-// ========= INATIVIDADE (mantido igual) =========
+// ========= INATIVIDADE =========
 const inactivityTimers = new Map();
 const lastAutoMessage = new Map();
-const INACTIVITY_TIMEOUT = 60 * 60 * 1000;
+const INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 1 hora
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 function getAutoMessageText(history) {
@@ -267,6 +273,7 @@ function getAutoMessageText(history) {
 
 function resetInactivityTimer(chatId) {
   if (inactivityTimers.has(chatId)) clearTimeout(inactivityTimers.get(chatId));
+
   const last = lastAutoMessage.get(chatId) || 0;
   if (Date.now() - last < ONE_DAY_MS) return;
 
@@ -288,7 +295,7 @@ app.post("/webhook", async (req, res) => {
     return;
   }
 
-  cleanupOldPendings();  // ← ponto 4
+  cleanupOldPendings();
 
   // ========= CALLBACK QUERY =========
   const cb = req.body?.callback_query;
@@ -303,34 +310,42 @@ app.post("/webhook", async (req, res) => {
     }
 
     if (data.startsWith("PLAN:")) {
-      cleanupOldPendings();  // ← ponto 4 (extra segurança)
-
       const planId = data.split(":")[1];
-      await tgAnswerCallback(cbId, "Gerando seu Pix... 😏");
 
-      awaitingPayment.set(chatId, true);
-
+      // Proteção contra race condition / duplo clique
       const alreadyPending = [...pendingByPaymentId.values()].some(v => v.chatId === chatId);
       if (alreadyPending) {
+        await tgAnswerCallback(cbId, "Já tem um Pix te esperando…");
         await tgSendMessage(chatId, "Já tem um Pix te esperando… paga ele que eu libero 🔥");
         resetInactivityTimer(chatId);
         return;
       }
 
-      const { paymentId, qrCode, plan } = await createPixPayment({ chatId, planId });
+      await tgAnswerCallback(cbId, "Gerando seu Pix... 😏");
 
-      const pixText =
-        `Ai amorzinho 😌\n\n` +
-        `Você escolheu *${escapeMarkdown(plan.label)}*\\. \n` +
-        `Me faz esse Pix pra eu me soltar todinha 💦\n\n` +
-        `📌 *Copia e cola:*\n` +
-        `${escapeMarkdown(qrCode)}\n\n` +
-        `Assim que cair eu aviso… e aí eu não me seguro mais 😈`;
+      awaitingPayment.set(chatId, true);
 
-      await tgSendMessage(chatId, pixText);
-      // NÃO pushHistory com metadados de pagamento (ponto 5)
-      console.log("PIX gerado:", { chatId, paymentId, plan: plan.id });
-      resetInactivityTimer(chatId);
+      try {
+        const { paymentId, qrCode, plan } = await createPixPayment({ chatId, planId });
+
+        const pixText =
+          `Ai amorzinho 😌\n\n` +
+          `Você escolheu *${escapeMarkdown(plan.label)}*\\. \n` +
+          `Me faz esse Pix pra eu me soltar todinha 💦\n\n` +
+          `📌 *Copia e cola:*\n` +
+          `${escapeMarkdown(qrCode)}\n\n` +
+          `Assim que cair eu aviso… e aí eu não me seguro mais 😈`;
+
+        await tgSendMessage(chatId, pixText, { parse_mode: "MarkdownV2" });
+
+        console.log("PIX gerado:", { chatId, paymentId, plan: plan.id });
+        resetInactivityTimer(chatId);
+      } catch (err) {
+        console.error("Erro ao gerar PIX:", err);
+        awaitingPayment.delete(chatId);
+        await tgSendMessage(chatId, "Ops… deu algum probleminha ao gerar o Pix 😔 Tenta de novo?");
+      }
+
       return;
     }
 
@@ -374,12 +389,13 @@ app.post("/webhook", async (req, res) => {
     return;
   }
 
+  // ─── Ordem corrigida ───
+  const justExpired = clearIfExpired(chatId);
+
   pushHistory(chatId, "user", text);
   userMsgCount.set(chatId, (userMsgCount.get(chatId) || 0) + 1);
 
   try {
-    const justExpired = clearIfExpired(chatId);  // ← ponto 2
-
     // 1. Premium ativo
     if (isPremium(chatId)) {
       const reply = await askGrok(chatId, text);
@@ -389,7 +405,7 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // 2. Acabou de expirar (agora detectado de forma confiável)
+    // 2. Acabou de expirar
     if (justExpired) {
       awaitingPayment.set(chatId, true);
       await sendPlansMenu(
@@ -427,7 +443,7 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // 5. Conversa normal
+    // 5. Conversa normal (free tier)
     const reply = await askGrok(chatId, text);
     pushHistory(chatId, "assistant", reply);
     await tgSendMessage(chatId, reply);
