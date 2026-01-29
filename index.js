@@ -222,33 +222,18 @@ async function tgSendPaymentButton(chatId, text, checkoutUrl) {
   }
 }
 
-// Nova função com copy persuasiva + botões inline
+// Função simplificada: só botões, copy de recomendação dentro do texto do botão
 async function sendPlansButtons(chatId) {
-  const text = `
-Ai amor… 😳<br>
-Escolhe como você quer me ter hoje 💦<br><br>
-
-😈 <b>48 horas – R$ 97,90</b> ⭐<br>
-<i>O mais recomendado</i><br>
-Aqui eu já me solto bastante… fico safada, quente e sem frescura 😏<br><br>
-
-💦 <b>7 dias – R$ 197,90</b> 🔥<br>
-<i>Sem filtro nenhum</i><br>
-Aqui eu me libero todinha… sem limite, sem vergonha, sem censura 😈<br><br>
-
-Ou se quiser algo rapidinho:
-  `.trim();
-
   const body = {
     chat_id: chatId,
-    text,
+    text: "Escolha seu plano:",
     parse_mode: "HTML",
     reply_markup: {
       inline_keyboard: [
-        [{ text: "⏱️ 1 hora – R$ 9,90", callback_data: "plan_p1h" }],
-        [{ text: "🔥 12 horas – R$ 49,90", callback_data: "plan_p12h" }],
-        [{ text: "😈 48 horas – R$ 97,90 ⭐ (Recomendado)", callback_data: "plan_p48h" }],
-        [{ text: "💦 7 dias – R$ 197,90 🔥 (Sem filtro)", callback_data: "plan_p7d" }],
+        [{ text: "⏱️ 1 hora — R$ 9,90", callback_data: "plan_p1h" }],
+        [{ text: "🔥 12 horas — R$ 49,90", callback_data: "plan_p12h" }],
+        [{ text: "😈 48 horas — R$ 97,90 ⭐🔥 Recomendado Sem filtro", callback_data: "plan_p48h" }],
+        [{ text: "💦 7 dias — R$ 197,90 ⭐🔥 Sem filtro", callback_data: "plan_p7d" }],
       ],
     },
   };
@@ -260,9 +245,7 @@ Ou se quiser algo rapidinho:
   });
 
   const j = await r.json();
-  if (!j.ok) {
-    console.error("sendPlansButtons FAIL:", j);
-  }
+  if (!j.ok) console.error("sendPlansButtons FAIL:", j);
 }
 
 async function gerarCheckout(chatId, planId) {
@@ -629,23 +612,6 @@ app.post("/webhook", async (req, res) => {
   userMsgCount.set(chatId, (userMsgCount.get(chatId) || 0) + 1);
 
   try {
-    // Tratamento de escolha por texto quando aguardando pagamento (fallback)
-    if (awaitingPayment.get(chatId)) {
-      const t = text.toLowerCase().trim();
-      if (t === "1h") return gerarCheckout(chatId, "p1h");
-      if (t === "12h") return gerarCheckout(chatId, "p12h");
-      if (t === "48h") return gerarCheckout(chatId, "p48h");
-      if (t === "7d") return gerarCheckout(chatId, "p7d");
-
-      await tgSendMessage(
-        chatId,
-        "Escolhe certinho amor 😌\nResponde com: <b>1h</b>, <b>12h</b>, <b>48h</b> ou <b>7d</b>",
-        { parse_mode: "HTML" }
-      );
-      resetInactivityTimer(chatId);
-      return;
-    }
-
     if (await isPremium(chatId)) {
       const reply = await askGrok(chatId, text);
       pushHistory(chatId, "assistant", reply);
