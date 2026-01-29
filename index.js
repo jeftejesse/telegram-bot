@@ -173,21 +173,6 @@ function escapeMarkdown(text = "") {
     .replace(/\./g, "\\.").replace(/!/g, "\\!");
 }
 
-async function sendPlansText(chatId, introText) {
-  const text =
-    `${introText}\n\n` +
-    `⏱️ <b>Plano 1 hora</b> – R$ 9,90\n` +
-    `Responda: <b>1h</b>\n\n` +
-    `🔥 <b>Plano 12 horas</b> – R$ 49,90\n` +
-    `Responda: <b>12h</b>\n\n` +
-    `😈 <b>Plano 48 horas</b> – R$ 97,90 ⭐\n` +
-    `Responda: <b>48h</b>\n\n` +
-    `💦 <b>Plano 7 dias</b> – R$ 197,90\n` +
-    `Responda: <b>7d</b>`;
-
-  await tgSendMessage(chatId, text, { parse_mode: "HTML" });
-}
-
 async function tgSendMessage(chatId, text, extra = {}) {
   try {
     const body = {
@@ -384,7 +369,7 @@ app.get("/mp/pending", (req, res) => {
 
 app.get("/mp/failure", (req, res) => {
   res.send("Que pena que não deu certo gatinho😔 Tenta novamente.");
-});  // ← Aqui foi adicionado o ); que estava faltando!
+});
 
 // ========= WEBHOOK MP =========
 app.post("/mp/webhook", async (req, res) => {
@@ -601,6 +586,7 @@ app.post("/webhook", async (req, res) => {
   userMsgCount.set(chatId, (userMsgCount.get(chatId) || 0) + 1);
 
   try {
+    // Tratamento de escolha por texto quando aguardando pagamento
     if (awaitingPayment.get(chatId)) {
       const t = text.toLowerCase().trim();
       if (t === "1h") return gerarCheckout(chatId, "p1h");
@@ -627,11 +613,7 @@ app.post("/webhook", async (req, res) => {
 
     if (justExpired) {
       awaitingPayment.set(chatId, true);
-      await sendPlansText(
-        chatId,
-        "Aah amorzinho… 😌\nNosso tempinho acabou… mas eu tô louquinha pra continuar 💦\n\nEscolhe um pacotinho respondendo com o número:"
-      );
-      resetInactivityTimer(chatId);
+      await gerarCheckout(chatId, DEFAULT_PLAN_ID); // botão direto do plano padrão
       return;
     }
 
@@ -645,11 +627,7 @@ app.post("/webhook", async (req, res) => {
 
     if (isPaymentTime) {
       awaitingPayment.set(chatId, true);
-      await sendPlansText(
-        chatId,
-        "Ai amor… 😳\nQuero MUITO continuar… mas pra eu ir sem freio preciso que você me libere 💦\n\nEscolhe um pacotinho respondendo com o número:"
-      );
-      resetInactivityTimer(chatId);
+      await gerarCheckout(chatId, DEFAULT_PLAN_ID); // botão direto do plano padrão
       return;
     }
 
