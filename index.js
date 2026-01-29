@@ -416,6 +416,31 @@ app.post("/webhook", async (req, res) => {
   const text = (msg.text || "").trim();
   if (!text) return;
 
+  // 🚫 BLOQUEIO DE ÁUDIO RECEBIDO
+if (msg.voice || msg.audio) {
+  await tgSendMessage(
+    chatId,
+    "Hmm… adoro quando você fala comigo 😏 mas agora quero te sentir pelas palavras… escreve pra mim 💕"
+  );
+  resetInactivityTimer(chatId);
+  return;
+}
+
+ // 🚫 BLOQUEIO DE PEDIDO DE FOTO / ÁUDIO (POR TEXTO)
+const wantsMedia =
+  /foto|selfie|imagem|nude|pelada|mostra|manda foto|áudio|audio|voz|fala comigo|me manda/i.test(
+    text.toLowerCase()
+  );
+
+if (wantsMedia) {
+  await tgSendMessage(
+    chatId,
+    "Ai amor… 😌 hoje quero te provocar só na imaginação… me escreve devagar 💭"
+  );
+  resetInactivityTimer(chatId);
+  return;
+}
+ 
   console.log("🔥 UPDATE:", chatId, text);
 
   if (text === "/start") {
