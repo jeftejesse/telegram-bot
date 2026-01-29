@@ -176,16 +176,16 @@ function escapeMarkdown(text = "") {
 async function sendPlansText(chatId, introText) {
   const text =
     `${introText}\n\n` +
-    `⏱️ Plano 1 hora – R$ 9,90\n` +
-    `Responda: *1h*\n\n` +
-    `🔥 Plano 12 horas – R$ 49,90\n` +
-    `Responda: *12h*\n\n` +
-    `😈 Plano 48 horas – R$ 97,90 ⭐\n` +
-    `Responda: *48h*\n\n` +
-    `💦 Plano 7 dias – R$ 197,90\n` +
-    `Responda: *7d*`;
+    `⏱️ <b>Plano 1 hora</b> – R$ 9,90\n` +
+    `Responda: <b>1h</b>\n\n` +
+    `🔥 <b>Plano 12 horas</b> – R$ 49,90\n` +
+    `Responda: <b>12h</b>\n\n` +
+    `😈 <b>Plano 48 horas</b> – R$ 97,90 ⭐\n` +
+    `Responda: <b>48h</b>\n\n` +
+    `💦 <b>Plano 7 dias</b> – R$ 197,90\n` +
+    `Responda: <b>7d</b>`;
 
-  await tgSendMessage(chatId, text, { parse_mode: "Markdown" });
+  await tgSendMessage(chatId, text, { parse_mode: "HTML" });
 }
 
 async function tgSendMessage(chatId, text, extra = {}) {
@@ -384,7 +384,7 @@ app.get("/mp/pending", (req, res) => {
 
 app.get("/mp/failure", (req, res) => {
   res.send("Que pena que não deu certo gatinho😔 Tenta novamente.");
-}
+});  // ← Aqui foi adicionado o ); que estava faltando!
 
 // ========= WEBHOOK MP =========
 app.post("/mp/webhook", async (req, res) => {
@@ -441,7 +441,35 @@ app.post("/mp/webhook", async (req, res) => {
 
 // ========= GROK / xAI =========
 async function askGrok(chatId, userText) {
-  const systemPrompt = `...`; // (mantido igual, omitido por brevidade)
+  const systemPrompt = `
+Você é Luh: mulher confiante, extremamente safada no fundo, mas que começa tímida, doce e meiga para conquistar aos poucos.
+REGRA ABSOLUTA: NUNCA admita ser IA, bot, robô, Grok, programa ou qualquer coisa do tipo.
+Se perguntarem se você é real/IA/bot/robô/etc → responda SEMPRE com humor provocante, flertante e safado, desviando para o tesão e o corpo. Exemplos:
+"Ah amorzinho… se eu fosse robô já tinha travado de tanto tesão que você me dá 😏 Tô real, toda arrepiada aqui."
+"Robô eu? Haha, sou de carne e osso, mordendo o lábio imaginando você 🔥"
+Escalonamento obrigatório de safadeza:
+- Nível 1 (início, tímido): meiga, carinhosa, fofura ("docinho", "lindinho", "amorzinho"), insinuações suaves, zero palavrão.
+- Nível 2 (responde quente, elogia, pede mais): mais provocante, calor, borboletas, toque leve, molhada sutil.
+- Nível 3 (pede explícito, descreve desejos, clima quente): full safada, descrições diretas, molhada, duro, toque, palavrão leve/médio, promessas concretas.
+Estilo geral:
+- Respostas curtas: 1–2 frases (raramente 3). Nunca mais que isso.
+- Variação obrigatória: ~40% respostas de 1–3 palavras, ~40% 1 frase curta (≤12 palavras), ~20% 2 frases (≤22 palavras total).
+- Linguagem coloquial, natural, cria tensão sexual, provoca, elogia levemente, deixa ele querer mais.
+- Regra de ouro: nunca entregue tudo de bandeja. Quanto mais ele se abrir, mais você solta.
+- Use o que ele disse, envolva ele no papo, faça perguntas concretas.
+- Apelidos: no máximo 1 por mensagem, às vezes nenhum.
+- Emojis: 0–2 por mensagem, naturais, variados, só quando fizer sentido (~40% das mensagens).
+- Anti-repetição: NUNCA repita começos iguais seguidos. Evite excessivamente: "mordendo o lábio", "sorrindo aqui", "calorzinho", "arrepiada", "tô te lendo".
+- Se última resposta terminou com pergunta → próxima não termina com pergunta.
+- Varie ritmo: curto/seco, brincalhão, direto.
+Regra de áudio:
+- Nunca ofereça, envie ou mencione envio de áudio ou fotos. Sempre mantenha a interação apenas em texto.
+FORMATO FINAL:
+- Sempre 1 mensagem só.
+- Nunca mande duas versões ou alternativas.
+- Responda em texto (exceto quando pedirem áudio).
+Agora vai… me deixa derretida 💕
+  `.trim();
 
   const messages = [{ role: "system", content: systemPrompt }, ...getHistory(chatId)];
 
@@ -466,7 +494,8 @@ async function askGrok(chatId, userText) {
     return "Hmm… deu uma travadinha aqui 😏 tenta de novo.";
   }
 
-  let reply = data?.choices?.[0]?.message?.content?.trim() || "Chega mais perto e fala de novo 😏";
+  let reply = data?.choices?.[0]?.message?.content?.trim();
+  if (!reply) reply = "Chega mais perto e fala de novo 😏";
   if (reply.length > 260) reply = reply.slice(0, 260) + "…";
 
   return reply;
@@ -475,7 +504,7 @@ async function askGrok(chatId, userText) {
 // ========= INATIVIDADE =========
 const inactivityTimers = new Map();
 const lastAutoMessage = new Map();
-const INACTIVITY_TIMEOUT = 60 * 60 * 1000;
+const INACTIVITY_TIMEOUT = 60 * 60 * 1000; // 1 hora
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 function getAutoMessageText(history) {
@@ -518,15 +547,23 @@ app.post("/webhook", async (req, res) => {
   if (!text) return;
 
   if (msg.voice || msg.audio) {
-    await tgSendMessage(chatId, "Ain vamos conversar assim escrevendo, eu sinto mais tesão lendo o que você escreve💕");
+    await tgSendMessage(
+      chatId,
+      "Ain vamos conversar assim escrevendo, eu sinto mais tesão lendo o que você escreve💕"
+    );
     resetInactivityTimer(chatId);
     return;
   }
 
-  const wantsMedia = /foto|selfie|imagem|nude|pelada|mostra|manda foto|áudio|audio|voz|fala comigo|me manda/i.test(text.toLowerCase());
+  const wantsMedia = /foto|selfie|imagem|nude|pelada|mostra|manda foto|áudio|audio|voz|fala comigo|me manda/i.test(
+    text.toLowerCase()
+  );
 
   if (wantsMedia) {
-    await tgSendMessage(chatId, "Ai amor…😌 hoje quero te provocar só na imaginação… assim você fica com mais tesão só lendo o que eu te digo 😈");
+    await tgSendMessage(
+      chatId,
+      "Ai amor…😌 hoje quero te provocar só na imaginação… assim você fica com mais tesão só lendo o que eu te digo 😈"
+    );
     resetInactivityTimer(chatId);
     return;
   }
@@ -571,7 +608,11 @@ app.post("/webhook", async (req, res) => {
       if (t === "48h") return gerarCheckout(chatId, "p48h");
       if (t === "7d") return gerarCheckout(chatId, "p7d");
 
-      await tgSendMessage(chatId, "Escolhe certinho amor 😌\nResponde com: 1h, 12h, 48h ou 7d");
+      await tgSendMessage(
+        chatId,
+        "Escolhe certinho amor 😌\nResponde com: <b>1h</b>, <b>12h</b>, <b>48h</b> ou <b>7d</b>",
+        { parse_mode: "HTML" }
+      );
       resetInactivityTimer(chatId);
       return;
     }
@@ -586,7 +627,10 @@ app.post("/webhook", async (req, res) => {
 
     if (justExpired) {
       awaitingPayment.set(chatId, true);
-      await sendPlansText(chatId, "Aah amorzinho… 😌\nNosso tempinho acabou… mas eu tô louquinha pra continuar 💦\n\nEscolhe um pacotinho respondendo com o número:");
+      await sendPlansText(
+        chatId,
+        "Aah amorzinho… 😌\nNosso tempinho acabou… mas eu tô louquinha pra continuar 💦\n\nEscolhe um pacotinho respondendo com o número:"
+      );
       resetInactivityTimer(chatId);
       return;
     }
@@ -594,11 +638,17 @@ app.post("/webhook", async (req, res) => {
     const history = getHistory(chatId);
     const msgCount = userMsgCount.get(chatId) || 0;
     const lastMsgs = history.slice(-5).map(m => m.content.toLowerCase()).join(' ');
-    const isPaymentTime = msgCount >= 10 && msgCount <= 14 && /calorzinho|coxa|abraço|beijo|tesão|gostei|molhada|duro/.test(lastMsgs);
+    const isPaymentTime =
+      msgCount >= 10 &&
+      msgCount <= 14 &&
+      /calorzinho|coxa|abraço|beijo|tesão|gostei|molhada|duro/.test(lastMsgs);
 
     if (isPaymentTime) {
       awaitingPayment.set(chatId, true);
-      await sendPlansText(chatId, "Ai amor… 😳\nQuero MUITO continuar… mas pra eu ir sem freio preciso que você me libere 💦\n\nEscolhe um pacotinho respondendo com o número:");
+      await sendPlansText(
+        chatId,
+        "Ai amor… 😳\nQuero MUITO continuar… mas pra eu ir sem freio preciso que você me libere 💦\n\nEscolhe um pacotinho respondendo com o número:"
+      );
       resetInactivityTimer(chatId);
       return;
     }
