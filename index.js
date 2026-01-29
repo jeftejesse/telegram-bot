@@ -31,12 +31,14 @@ const DEFAULT_PLAN_ID = "p12h";
 
 // ========= CONFIGURAÇÕES ADICIONAIS =========
 const PENDING_TTL_MS = 2 * 60 * 60 * 1000; // 2 horas
+const CHECKOUT_COOLDOWN_MS = 30 * 1000; // 30 segundos de proteção contra clique repetido
 
 // ========= MEMÓRIA E ESTADOS =========
 const memory = new Map();
 const MAX_MESSAGES = 20;
 const userMsgCount = new Map();
 const awaitingPayment = new Map();
+const lastCheckoutAt = new Map(); // anti-clique repetido
 
 // ========= DB (Postgres) =========
 const pool =
@@ -107,7 +109,7 @@ async function clearIfExpired(chatId) {
   return false;
 }
 
-// --- Pendências (Checkout Pro) ---
+// --- Pendências ---
 async function dbInsertPending(preferenceId, chatId, planId) {
   if (!pool) return;
   await pool.query(
@@ -333,6 +335,7 @@ app.post("/mp/webhook", async (req, res) => {
     if (status === "approved" && !(await isPremium(chatId))) {
       await dbSetPremiumUntil(chatId, Date.now() + plan.durationMs);
       awaitingPayment.delete(chatId);
+      lastCheckoutAt.delete(chatId); // libera cooldown
       await dbDeletePending(preferenceId);
       userMsgCount.delete(chatId);
       await tgSendMessage(
@@ -444,6 +447,7 @@ app.post("/webhook", async (req, res) => {
     return;
   }
   await cleanupOldPendings();
+
   // ========= CALLBACK QUERY =========
   const cb = req.body?.callback_query;
   if (cb) {
@@ -456,6 +460,21 @@ app.post("/webhook", async (req, res) => {
     }
     if (data.startsWith("PLAN:")) {
       const planId = data.split(":")[1];
+
+      // Cooldown anti-clique repetido
+      const now = Date.now();
+      const last = lastCheckoutAt.get(chatId) || 0;
+      if (now - last < CHECKOUT_COOLDOWN_MS) {
+        await tgAnswerCallback(cbId, "Espera só um pouquinho 😏");
+        await tgSendMessage(
+          chatId,
+          "Já tô gerando pra você 😌\nSe fechou sem querer, tenta de novo em alguns segundinhos 😈"
+        );
+        return;
+      }
+
+      lastCheckoutAt.set(chatId, now);
+
       await tgAnswerCallback(cbId, "Gerando link de pagamento... 😏");
       try {
         const { checkoutUrl, plan } = await createCheckout({ chatId, planId });
@@ -501,7 +520,7 @@ app.post("/webhook", async (req, res) => {
 
         await tgSendMessage(chatId, paymentText, {
           parse_mode: "Markdown",
-          disable_web_page_preview: false,
+          disable_web_page_preview: true, // <--- AJUSTE FEITO AQUI
         });
 
         awaitingPayment.set(chatId, true);
@@ -509,6 +528,7 @@ app.post("/webhook", async (req, res) => {
       } catch (err) {
         console.error("❌ Erro ao gerar checkout:", err?.message || err);
         awaitingPayment.delete(chatId);
+        lastCheckoutAt.delete(chatId); // libera cooldown em caso de erro
         await tgSendMessage(chatId, "Ops… deu algum probleminha ao gerar o pagamento 😔 Tenta de novo?");
       }
       return;
@@ -516,6 +536,7 @@ app.post("/webhook", async (req, res) => {
     await tgAnswerCallback(cbId, "Ok 😉");
     return;
   }
+
   // ========= MENSAGEM NORMAL =========
   const msg = req.body?.message;
   if (!msg) return;
