@@ -160,19 +160,6 @@ function pushHistory(chatId, role, content) {
   while (h.length > MAX_MESSAGES) h.shift();
 }
 
-function escapeMarkdown(text = "") {
-  return text
-    .replace(/_/g, "\\_").replace(/\*/g, "\\*")
-    .replace(/\[/g, "\\[").replace(/\]/g, "\\]")
-    .replace(/\(/g, "\\(").replace(/\)/g, "\\)")
-    .replace(/~/g, "\\~").replace(/`/g, "\\`")
-    .replace(/>/g, "\\>").replace(/#/g, "\\#")
-    .replace(/\+/g, "\\+").replace(/-/g, "\\-")
-    .replace(/=/g, "\\=").replace(/\|/g, "\\|")
-    .replace(/{/g, "\\{").replace(/}/g, "\\}")
-    .replace(/\./g, "\\.").replace(/!/g, "\\!");
-}
-
 async function tgSendMessage(chatId, text, extra = {}) {
   try {
     const body = {
@@ -235,6 +222,49 @@ async function tgSendPaymentButton(chatId, text, checkoutUrl) {
   }
 }
 
+// Nova função com copy persuasiva + botões inline
+async function sendPlansButtons(chatId) {
+  const text = `
+Ai amor… 😳<br>
+Escolhe como você quer me ter hoje 💦<br><br>
+
+😈 <b>48 horas – R$ 97,90</b> ⭐<br>
+<i>O mais recomendado</i><br>
+Aqui eu já me solto bastante… fico safada, quente e sem frescura 😏<br><br>
+
+💦 <b>7 dias – R$ 197,90</b> 🔥<br>
+<i>Sem filtro nenhum</i><br>
+Aqui eu me libero todinha… sem limite, sem vergonha, sem censura 😈<br><br>
+
+Ou se quiser algo rapidinho:
+  `.trim();
+
+  const body = {
+    chat_id: chatId,
+    text,
+    parse_mode: "HTML",
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "⏱️ 1 hora – R$ 9,90", callback_data: "plan_p1h" }],
+        [{ text: "🔥 12 horas – R$ 49,90", callback_data: "plan_p12h" }],
+        [{ text: "😈 48 horas – R$ 97,90 ⭐ (Recomendado)", callback_data: "plan_p48h" }],
+        [{ text: "💦 7 dias – R$ 197,90 🔥 (Sem filtro)", callback_data: "plan_p7d" }],
+      ],
+    },
+  };
+
+  const r = await fetch(`${TELEGRAM_API}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  const j = await r.json();
+  if (!j.ok) {
+    console.error("sendPlansButtons FAIL:", j);
+  }
+}
+
 async function gerarCheckout(chatId, planId) {
   const now = Date.now();
   const last = lastCheckoutAt.get(chatId) || 0;
@@ -267,19 +297,18 @@ async function gerarCheckout(chatId, planId) {
 
     if (plan.id === "p48h") {
       paymentText = 
-        `😈 <b>Plano 48 horas</b> – <b>R$ 97,90</b>\n` +
-        `⭐ Mais escolhido\n\n` +
-        `💬 Recomendo esse, amorzinho…\n` +
-        `aqui eu dou uma atenção especial\n` +
-        `e fico bem mais soltinha 😈🔥\n\n` +
+        `😈 <b>Plano 48 horas</b> – <b>R$ 97,90</b> ⭐\n` +
+        `O mais recomendado\n\n` +
+        `Aqui eu já me solto bastante… fico provocante, safada e sem frescura 😏\n\n` +
         `👇 Clique no botão abaixo para pagar:`;
     }
 
     if (plan.id === "p7d") {
       paymentText = 
-        `💦 <b>Plano 7 dias</b> – <b>R$ 197,90</b>\n\n` +
-        `👇 Clique no botão abaixo para pagar (Pix ou Cartão)\n\n` +
-        `⏳ Assim que o pagamento for aprovado, eu libero automaticamente 😈`;
+        `💦 <b>Plano 7 dias</b> – <b>R$ 197,90</b> 🔥\n` +
+        `Sem filtro nenhum\n\n` +
+        `Aqui eu me libero todinha… sem limite, sem vergonha, sem censura 😈\n\n` +
+        `👇 Clique no botão abaixo para pagar:`;
     }
 
     await tgSendPaymentButton(chatId, paymentText, checkoutUrl);
@@ -522,6 +551,20 @@ app.post("/webhook", async (req, res) => {
     return;
   }
 
+  // Tratamento de callback_query (clique nos botões de plano)
+  const cb = req.body?.callback_query;
+  if (cb) {
+    const chatId = cb.message.chat.id;
+    const data = cb.data;
+
+    if (data === "plan_p1h") return gerarCheckout(chatId, "p1h");
+    if (data === "plan_p12h") return gerarCheckout(chatId, "p12h");
+    if (data === "plan_p48h") return gerarCheckout(chatId, "p48h");
+    if (data === "plan_p7d") return gerarCheckout(chatId, "p7d");
+
+    return;
+  }
+
   await cleanupOldPendings();
 
   const msg = req.body?.message;
@@ -586,7 +629,7 @@ app.post("/webhook", async (req, res) => {
   userMsgCount.set(chatId, (userMsgCount.get(chatId) || 0) + 1);
 
   try {
-    // Tratamento de escolha por texto quando aguardando pagamento
+    // Tratamento de escolha por texto quando aguardando pagamento (fallback)
     if (awaitingPayment.get(chatId)) {
       const t = text.toLowerCase().trim();
       if (t === "1h") return gerarCheckout(chatId, "p1h");
@@ -613,7 +656,7 @@ app.post("/webhook", async (req, res) => {
 
     if (justExpired) {
       awaitingPayment.set(chatId, true);
-      await gerarCheckout(chatId, DEFAULT_PLAN_ID); // botão direto do plano padrão
+      await sendPlansButtons(chatId);
       return;
     }
 
@@ -627,7 +670,7 @@ app.post("/webhook", async (req, res) => {
 
     if (isPaymentTime) {
       awaitingPayment.set(chatId, true);
-      await gerarCheckout(chatId, DEFAULT_PLAN_ID); // botão direto do plano padrão
+      await sendPlansButtons(chatId);
       return;
     }
 
