@@ -172,21 +172,83 @@ function escapeMarkdown(text = "") {
     .replace(/\./g, "\\.").replace(/!/g, "\\!");
 }
 
-function planKeyboard() {
-  return {
-    inline_keyboard: [
-      [{ text: "⏱️ 1h — R$ 9,90", callback_data: "PLAN:p1h" }],
-      [{ text: "🔥 12h — R$ 49,90", callback_data: "PLAN:p12h" }],
-      [{ text: "😈 48h — R$ 97,90 ⭐", callback_data: "PLAN:p48h" }],
-      [{ text: "💦 7 dias — R$ 197,90", callback_data: "PLAN:p7d" }],
-    ],
-  };
+// ⚠️ REMOVIDO:
+// sendPlansMenu e planKeyboard foram removidos
+// Motivo: evitar botões de pagamento (usar apenas texto + link)
+
+async function sendPlansText(chatId, introText) {
+  const text =
+    `${introText}\n\n` +
+    `⏱️ Plano 1 hora – R$ 9,90\n` +
+    `Responda: *1h*\n\n` +
+    `🔥 Plano 12 horas – R$ 49,90\n` +
+    `Responda: *12h*\n\n` +
+    `😈 Plano 48 horas – R$ 97,90 ⭐\n` +
+    `Responda: *48h*\n\n` +
+    `💦 Plano 7 dias – R$ 197,90\n` +
+    `Responda: *7d*`;
+
+  await tgSendMessage(chatId, text, {
+    parse_mode: "Markdown",
+  });
 }
 
-async function sendPlansMenu(chatId, introText) {
-  await tgSendMessage(chatId, introText, {
-    reply_markup: planKeyboard(),
-  });
+async function gerarCheckout(chatId, planId) {
+  try {
+    const { checkoutUrl, plan } = await createCheckout({ chatId, planId });
+    console.log("✅ checkoutUrl:", checkoutUrl);
+    console.log("✅ Checkout criado:", { chatId, planId: plan.id, checkoutUrl });
+
+    let paymentText = "";
+
+    if (plan.id === "p1h") {
+      paymentText =
+        `⏱️ *Plano 1 hora* – *R$ 9,90*\n\n` +
+        `👉 Clique aqui para pagar (Pix ou Cartão):\n` +
+        `${checkoutUrl}\n\n` +
+        `⏳ Assim que o pagamento for aprovado, eu libero automaticamente 😈`;
+    }
+
+    if (plan.id === "p12h") {
+      paymentText =
+        `🔥 *Plano 12 horas* – *R$ 49,90*\n\n` +
+        `👉 Clique aqui para pagar (Pix ou Cartão):\n` +
+        `${checkoutUrl}\n\n` +
+        `⏳ Assim que o pagamento for aprovado, eu libero automaticamente 😈`;
+    }
+
+    if (plan.id === "p48h") {
+      paymentText =
+        `😈 *Plano 48 horas* – *R$ 97,90*\n` +
+        `⭐ Mais escolhido\n\n` +
+        `💬 Recomendo esse, amorzinho…\n` +
+        `aqui eu dou uma atenção especial\n` +
+        `e fico bem mais soltinha 😈🔥\n\n` +
+        `👉 Clique aqui para pagar (Pix ou Cartão):\n` +
+        `${checkoutUrl}`;
+    }
+
+    if (plan.id === "p7d") {
+      paymentText =
+        `💦 *Plano 7 dias* – *R$ 197,90*\n\n` +
+        `👉 Clique aqui para pagar (Pix ou Cartão):\n` +
+        `${checkoutUrl}\n\n` +
+        `⏳ Assim que o pagamento for aprovado, eu libero automaticamente 😈`;
+    }
+
+    await tgSendMessage(chatId, paymentText, {
+      parse_mode: "Markdown",
+      disable_web_page_preview: true,
+    });
+
+    awaitingPayment.set(chatId, true);
+    resetInactivityTimer(chatId);
+  } catch (err) {
+    console.error("❌ Erro ao gerar checkout:", err?.message || err);
+    awaitingPayment.delete(chatId);
+    lastCheckoutAt.delete(chatId);
+    await tgSendMessage(chatId, "Ops… deu algum probleminha ao gerar o pagamento 😔 Tenta de novo?");
+  }
 }
 
 async function cleanupOldPendings() {
@@ -335,7 +397,7 @@ app.post("/mp/webhook", async (req, res) => {
     if (status === "approved" && !(await isPremium(chatId))) {
       await dbSetPremiumUntil(chatId, Date.now() + plan.durationMs);
       awaitingPayment.delete(chatId);
-      lastCheckoutAt.delete(chatId); // libera cooldown
+      lastCheckoutAt.delete(chatId);
       await dbDeletePending(preferenceId);
       userMsgCount.delete(chatId);
       await tgSendMessage(
@@ -347,6 +409,7 @@ app.post("/mp/webhook", async (req, res) => {
     }
     if (["cancelled", "rejected", "expired"].includes(status)) {
       awaitingPayment.delete(chatId);
+      lastCheckoutAt.delete(chatId); // libera cooldown se falhar/expirar
       await dbDeletePending(preferenceId);
     }
   } catch (e) {
@@ -520,7 +583,7 @@ app.post("/webhook", async (req, res) => {
 
         await tgSendMessage(chatId, paymentText, {
           parse_mode: "Markdown",
-          disable_web_page_preview: true, // <--- AJUSTE FEITO AQUI
+          disable_web_page_preview: true,
         });
 
         awaitingPayment.set(chatId, true);
@@ -528,7 +591,7 @@ app.post("/webhook", async (req, res) => {
       } catch (err) {
         console.error("❌ Erro ao gerar checkout:", err?.message || err);
         awaitingPayment.delete(chatId);
-        lastCheckoutAt.delete(chatId); // libera cooldown em caso de erro
+        lastCheckoutAt.delete(chatId);
         await tgSendMessage(chatId, "Ops… deu algum probleminha ao gerar o pagamento 😔 Tenta de novo?");
       }
       return;
@@ -543,6 +606,7 @@ app.post("/webhook", async (req, res) => {
   const chatId = msg.chat.id;
   const text = (msg.text || "").trim();
   if (!text) return;
+
   if (msg.voice || msg.audio) {
     await tgSendMessage(
       chatId,
@@ -551,6 +615,7 @@ app.post("/webhook", async (req, res) => {
     resetInactivityTimer(chatId);
     return;
   }
+
   const wantsMedia =
     /foto|selfie|imagem|nude|pelada|mostra|manda foto|áudio|audio|voz|fala comigo|me manda/i.test(
       text.toLowerCase()
@@ -563,11 +628,14 @@ app.post("/webhook", async (req, res) => {
     resetInactivityTimer(chatId);
     return;
   }
+
   console.log("🔥 UPDATE:", chatId, text);
+
   if (text === "/start") {
     await tgSendMessage(chatId, "Oi amorzinho… 😊\n\nPapo adulto, safado e consensual só entre nós tá? Se quiser parar: /stop\n\nO que tá passando nessa cabecinha safadinha? 😏");
     return;
   }
+
   if (text === "/stop") {
     await tgSendMessage(chatId, "Tá bom docinho… 😊 paro por aqui. Volta quando quiser 💕");
     memory.delete(chatId);
@@ -581,15 +649,36 @@ app.post("/webhook", async (req, res) => {
     lastAutoMessage.delete(chatId);
     return;
   }
+
   await tgTyping(chatId);
+
   if (!XAI_API_KEY) {
     await tgSendMessage(chatId, "Tô aqui… mas minha parte mais safada tá dormindo ainda 😌");
     return;
   }
+
   const justExpired = await clearIfExpired(chatId);
   pushHistory(chatId, "user", text);
   userMsgCount.set(chatId, (userMsgCount.get(chatId) || 0) + 1);
+
   try {
+    // Tratamento de escolha por texto quando aguardando pagamento
+    if (awaitingPayment.get(chatId)) {
+      const t = text.toLowerCase().trim();
+
+      if (t === "1h") return gerarCheckout(chatId, "p1h");
+      if (t === "12h") return gerarCheckout(chatId, "p12h");
+      if (t === "48h") return gerarCheckout(chatId, "p48h");
+      if (t === "7d") return gerarCheckout(chatId, "p7d");
+
+      await tgSendMessage(
+        chatId,
+        "Escolhe certinho amor 😌\nResponde com: 1h, 12h, 48h ou 7d"
+      );
+      resetInactivityTimer(chatId);
+      return;
+    }
+
     if (await isPremium(chatId)) {
       const reply = await askGrok(chatId, text);
       pushHistory(chatId, "assistant", reply);
@@ -597,15 +686,17 @@ app.post("/webhook", async (req, res) => {
       resetInactivityTimer(chatId);
       return;
     }
+
     if (justExpired) {
       awaitingPayment.set(chatId, true);
-      await sendPlansMenu(
+      await sendPlansText(
         chatId,
-        "Aah amorzinho… 😌\nNosso tempinho acabou… mas eu tô louquinha pra continuar 💦\n\nEscolhe um pacotinho 👇"
+        "Aah amorzinho… 😌\nNosso tempinho acabou… mas eu tô louquinha pra continuar 💦\n\nEscolhe um pacotinho respondendo com o número:"
       );
       resetInactivityTimer(chatId);
       return;
     }
+
     if (awaitingPayment.get(chatId)) {
       await tgSendMessage(
         chatId,
@@ -614,20 +705,23 @@ app.post("/webhook", async (req, res) => {
       resetInactivityTimer(chatId);
       return;
     }
+
     const history = getHistory(chatId);
     const msgCount = userMsgCount.get(chatId) || 0;
     const lastMsgs = history.slice(-5).map(m => m.content.toLowerCase()).join(' ');
     const isPaymentTime = msgCount >= 10 && msgCount <= 14 &&
       /calorzinho|coxa|abraço|beijo|tesão|gostei|molhada|duro/.test(lastMsgs);
+
     if (isPaymentTime) {
       awaitingPayment.set(chatId, true);
-      await sendPlansMenu(
+      await sendPlansText(
         chatId,
-        "Ai amor… 😳\nQuero MUITO continuar… mas pra eu ir sem freio preciso que você me libere 💦\n\nEscolhe um pacotinho 👇"
+        "Ai amor… 😳\nQuero MUITO continuar… mas pra eu ir sem freio preciso que você me libere 💦\n\nEscolhe um pacotinho respondendo com o número:"
       );
       resetInactivityTimer(chatId);
       return;
     }
+
     const reply = await askGrok(chatId, text);
     pushHistory(chatId, "assistant", reply);
     await tgSendMessage(chatId, reply);
