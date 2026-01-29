@@ -54,7 +54,6 @@ async function dbInit() {
       premium_until TIMESTAMPTZ NOT NULL
     );
   `);
-
   await pool.query(`
     CREATE TABLE IF NOT EXISTS pendings (
       preference_id TEXT PRIMARY KEY,
@@ -63,8 +62,8 @@ async function dbInit() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
-
   await pool.query(`CREATE INDEX IF NOT EXISTS pendings_created_at_idx ON pendings(created_at);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS pendings_chat_id_idx ON pendings(chat_id);`);
   console.log("✅ DB pronto");
 }
 
@@ -435,20 +434,18 @@ app.post("/webhook", async (req, res) => {
     }
     if (data.startsWith("PLAN:")) {
       const planId = data.split(":")[1];
-
       // Ajuste 1 + Ajuste 2: verificação segura e com TTL
       let alreadyPending = false;
       if (pool) {
         const r = await pool.query(
-          `SELECT 1 FROM pendings 
-           WHERE chat_id = $1 
-             AND created_at > NOW() - INTERVAL '2 hours' 
+          `SELECT 1 FROM pendings
+           WHERE chat_id = $1
+             AND created_at > NOW() - INTERVAL '2 hours'
            LIMIT 1`,
           [chatId]
         );
         alreadyPending = r.rowCount > 0;
       }
-
       if (alreadyPending) {
         await tgAnswerCallback(cbId, "Ainda estou esperando o pagamento amorzinho... Já libero tudo😏🔥");
         await tgSendMessage(chatId, "Ai amorzinho, faz o pagamento por favor?🙏 Prometo que vou me liberar todinha pra você😈💦");
