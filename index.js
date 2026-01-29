@@ -195,15 +195,20 @@ async function tgSendMessage(chatId, text, extra = {}) {
     const body = {
       chat_id: chatId,
       text,
-      parse_mode: extra.parse_mode || undefined,
       disable_web_page_preview: true,
       ...extra,
     };
-    await fetch(`${TELEGRAM_API}/sendMessage`, {
+
+    const r = await fetch(`${TELEGRAM_API}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
+
+    const j = await r.json();
+    if (!j.ok) {
+      console.error("Telegram sendMessage FAIL:", j);
+    }
   } catch (e) {
     console.error("Telegram error:", e.message);
   }
@@ -458,12 +463,11 @@ app.post("/webhook", async (req, res) => {
         const { checkoutUrl, plan } = await createCheckout({ chatId, planId });
         const messageText =
           `Ai amorzinho 😌\n\n` +
-          `Você escolheu *${escapeMarkdown(plan.label)}*\\. \n` +
+          `Você escolheu ${plan.label}.\n` +
           `Me libera aqui rapidinho que eu fico sem freio 💦\n\n` +
           `⚠️ Não feche essa tela até concluir o pagamento.\n\n` +
           `Clica no botão abaixo pra pagar (Pix ou cartão):`;
         await tgSendMessage(chatId, messageText, {
-          parse_mode: "MarkdownV2",
           reply_markup: {
             inline_keyboard: [[
               { text: "💳 Pagar agora (Pix ou Cartão)", url: checkoutUrl }
