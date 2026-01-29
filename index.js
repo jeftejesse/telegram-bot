@@ -226,13 +226,13 @@ async function tgSendPaymentButton(chatId, text, checkoutUrl) {
 async function sendPlansButtons(chatId) {
   const body = {
     chat_id: chatId,
-    text: "Escolha seu plano:",
+    text: "Ain amorzinhoo 😳\nPra eu continuar safadinha com você, escolhe um pacotinho.🙏\nTe prometo que me solto todinha 💦🔥",
     parse_mode: "HTML",
     reply_markup: {
       inline_keyboard: [
         [{ text: "⏱️ 1 hora — R$ 9,90", callback_data: "plan_p1h" }],
         [{ text: "🔥 12 horas — R$ 49,90", callback_data: "plan_p12h" }],
-        [{ text: "😈 48 horas — R$ 97,90 ⭐🔥 Recomendado Sem filtro", callback_data: "plan_p48h" }],
+        [{ text: "😈 48 horas — R$ 97,90 ⭐🔥 Recomendado", callback_data: "plan_p48h" }],
         [{ text: "💦 7 dias — R$ 197,90 ⭐🔥 Sem filtro", callback_data: "plan_p7d" }],
       ],
     },
