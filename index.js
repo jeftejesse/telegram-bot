@@ -3,6 +3,7 @@ import { Pool } from "pg";
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true }));
 
 // ========= ENV =========
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -302,9 +303,19 @@ app.get("/mp/failure", (req, res) => {
 
 // ========= WEBHOOK MP =========
 app.post("/mp/webhook", async (req, res) => {
+  console.log("🔔 MP WEBHOOK:", JSON.stringify(req.body), JSON.stringify(req.query));
   res.sendStatus(200);
-  const paymentId = req.body?.data?.id || req.body?.id || req.query?.data?.id || req.query?.id;
-  if (!paymentId) return;
+
+  const paymentId =
+    req.query?.id ||
+    req.body?.data?.id ||
+    req.body?.id;
+
+  if (!paymentId) {
+    console.log("❌ sem paymentId");
+    return;
+  }
+
   try {
     const r = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
       headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
@@ -465,7 +476,7 @@ app.post("/webhook", async (req, res) => {
       await tgAnswerCallback(cbId, "Gerando link de pagamento... 😏");
       try {
         const { checkoutUrl, plan } = await createCheckout({ chatId, planId });
-
+        console.log("✅ checkoutUrl:", checkoutUrl);
         console.log("✅ Checkout criado:", { chatId, planId: plan.id, checkoutUrl });
 
         const messageText =
@@ -477,7 +488,7 @@ app.post("/webhook", async (req, res) => {
         const sent = await tgSendMessage(chatId, messageText, {
           reply_markup: {
             inline_keyboard: [[
-              { text: "💳 Pagar agora (Pix ou Cartão)", url: checkoutUrl }
+              { text: "💳 Pagar agora (Pix ou Cartão)", login_url: { url: checkoutUrl } }
             ]]
           }
         });
@@ -485,7 +496,7 @@ app.post("/webhook", async (req, res) => {
         // Envia link textual como fallback sempre (mais seguro)
         await tgSendMessage(
           chatId,
-          `🔗 Se o botão não abrir, paga direto aqui:\n${checkoutUrl}`
+          `Se não abrir pelo botão, copia e cola no navegador:\n${checkoutUrl}`
         );
 
         // Só marca aguardando pagamento se o botão foi enviado com sucesso
