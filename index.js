@@ -222,7 +222,6 @@ async function tgSendPaymentButton(chatId, text, checkoutUrl) {
   }
 }
 
-// Função simplificada: só botões, copy de recomendação dentro do texto do botão
 async function sendPlansButtons(chatId) {
   const body = {
     chat_id: chatId,
@@ -265,21 +264,21 @@ async function gerarCheckout(chatId, planId) {
     let paymentText = "";
 
     if (plan.id === "p1h") {
-      paymentText = 
+      paymentText =
         `⏱️ <b>Plano 1 hora</b> – <b>R$ 9,90</b>\n\n` +
         `👇 Clique no botão abaixo para pagar (Pix ou Cartão)\n\n` +
         `⏳ Assim que o pagamento for aprovado, eu libero automaticamente 😈`;
     }
 
     if (plan.id === "p12h") {
-      paymentText = 
+      paymentText =
         `🔥 <b>Plano 12 horas</b> – <b>R$ 49,90</b>\n\n` +
         `👇 Clique no botão abaixo para pagar (Pix ou Cartão)\n\n` +
         `⏳ Assim que o pagamento for aprovado, eu libero automaticamente 😈`;
     }
 
     if (plan.id === "p48h") {
-      paymentText = 
+      paymentText =
         `😈 <b>Plano 48 horas</b> – <b>R$ 97,90</b> ⭐\n` +
         `O mais recomendado\n\n` +
         `Aqui eu já me solto bastante… fico provocante, safada e sem frescura 😏\n\n` +
@@ -287,7 +286,7 @@ async function gerarCheckout(chatId, planId) {
     }
 
     if (plan.id === "p7d") {
-      paymentText = 
+      paymentText =
         `💦 <b>Plano 7 dias</b> – <b>R$ 197,90</b> 🔥\n` +
         `Sem filtro nenhum\n\n` +
         `Aqui eu me libero todinha… sem limite, sem vergonha, sem censura 😈\n\n` +
@@ -388,49 +387,95 @@ app.post("/mp/webhook", async (req, res) => {
   console.log("🔔 MP WEBHOOK:", JSON.stringify(req.body), JSON.stringify(req.query));
   res.sendStatus(200);
 
-  const paymentId = req.query?.id || req.body?.data?.id || req.body?.id;
-  if (!paymentId) {
-    console.log("❌ sem paymentId");
-    return;
-  }
-
   try {
+    const topic = req.query?.topic || req.body?.topic || req.body?.type || "";
+    const idFromQuery = req.query?.id;
+    const idFromBody = req.body?.data?.id || req.body?.id;
+
+    // Helper: ativa premium direto por payment object
+    const activateFromPayment = async (p) => {
+      console.log("DEBUG payment:", {
+        status: p?.status,
+        external_reference: p?.external_reference,
+        metadata: p?.metadata,
+      });
+
+      const status = p?.status;
+      if (status !== "approved") return false;
+
+      const chatId =
+        Number(p?.external_reference) ||
+        Number(p?.metadata?.chat_id);
+
+      const planId = p?.metadata?.plan_id;
+
+      if (!chatId || !planId || !PLANS[planId]) {
+        console.log("❌ Não deu pra ativar (faltou chatId/planId)", { chatId, planId });
+        return false;
+      }
+
+      if (!(await isPremium(chatId))) {
+        await dbSetPremiumUntil(chatId, Date.now() + PLANS[planId].durationMs);
+
+        awaitingPayment.delete(chatId);
+        lastCheckoutAt.delete(chatId);
+        userMsgCount.delete(chatId);
+
+        await tgSendMessage(
+          chatId,
+          `✅ Pagamento aprovado!\nLiberado por <b>${PLANS[planId].label}</b> 😈\nVem cá… agora sem limite 🔥`,
+          { parse_mode: "HTML" }
+        );
+        resetInactivityTimer(chatId);
+        console.log("✅ Premium ativado", { chatId, planId });
+        return true;
+      }
+
+      return true;
+    };
+
+    // 1) Se vier como merchant_order, pega payments do pedido
+    if (topic.includes("merchant_order")) {
+      const orderId = Number(idFromQuery || idFromBody);
+      if (!orderId) return;
+
+      const or = await fetch(`https://api.mercadopago.com/merchant_orders/${orderId}`, {
+        headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+      });
+      const order = await or.json();
+      if (!or.ok) {
+        console.log("❌ merchant_order fetch fail", order);
+        return;
+      }
+
+      const payments = Array.isArray(order?.payments) ? order.payments : [];
+      for (const pay of payments) {
+        const pr = await fetch(`https://api.mercadopago.com/v1/payments/${pay.id}`, {
+          headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+        });
+        const p = await pr.json();
+        if (pr.ok) {
+          const activated = await activateFromPayment(p);
+          if (activated) break;
+        }
+      }
+      return;
+    }
+
+    // 2) Se vier como payment (normal)
+    const paymentId = Number(idFromQuery || idFromBody);
+    if (!paymentId) {
+      console.log("❌ sem paymentId");
+      return;
+    }
+
     const r = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
       headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
     });
     const p = await r.json();
     if (!r.ok) return;
 
-    const status = p.status;
-    const preferenceId = p.preference_id;
-    const pending = await dbGetPending(preferenceId);
-    if (!pending) return;
-
-    const chatId = Number(p.external_reference) || pending.chat_id || Number(p.metadata?.chat_id);
-    if (!chatId) return;
-
-    const plan = PLANS[p.metadata?.plan_id] || PLANS[pending.plan_id] || PLANS[DEFAULT_PLAN_ID];
-
-    if (status === "approved" && !(await isPremium(chatId))) {
-      await dbSetPremiumUntil(chatId, Date.now() + plan.durationMs);
-      awaitingPayment.delete(chatId);
-      lastCheckoutAt.delete(chatId);
-      await dbDeletePending(preferenceId);
-      userMsgCount.delete(chatId);
-
-      await tgSendMessage(
-        chatId,
-        `✅ Pagamento aprovado!\nLiberado por <b>${plan.label}</b> 😈\nVem cá… agora sem limite 🔥`,
-        { parse_mode: "HTML" }
-      );
-      resetInactivityTimer(chatId);
-    }
-
-    if (["cancelled", "rejected", "expired"].includes(status)) {
-      awaitingPayment.delete(chatId);
-      lastCheckoutAt.delete(chatId);
-      await dbDeletePending(preferenceId);
-    }
+    await activateFromPayment(p);
   } catch (e) {
     console.error("MP webhook error:", e.message);
   }
@@ -539,6 +584,13 @@ app.post("/webhook", async (req, res) => {
   if (cb) {
     const chatId = cb.message.chat.id;
     const data = cb.data;
+
+    // Responde imediatamente ao callback (melhora UX, remove "carregando...")
+    await fetch(`${TELEGRAM_API}/answerCallbackQuery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callback_query_id: cb.id }),
+    });
 
     if (data === "plan_p1h") return gerarCheckout(chatId, "p1h");
     if (data === "plan_p12h") return gerarCheckout(chatId, "p12h");
