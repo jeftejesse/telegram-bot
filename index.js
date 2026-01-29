@@ -511,19 +511,6 @@ app.post("/webhook", async (req, res) => {
   }
   await cleanupOldPendings();
 
-  // ========= CALLBACK QUERY =========
-  const cb = req.body?.callback_query;
-  if (cb) {
-    const chatId = cb.message?.chat?.id;
-    const data = cb.data || "";
-    const cbId = cb.id;
-    if (!chatId) {
-      await tgAnswerCallback(cbId, "Erro");
-      return;
-    }
-    if (data.startsWith("PLAN:")) {
-      const planId = data.split(":")[1];
-
       // Cooldown anti-clique repetido
       const now = Date.now();
       const last = lastCheckoutAt.get(chatId) || 0;
