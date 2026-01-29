@@ -486,6 +486,7 @@ app.post("/webhook", async (req, res) => {
           `Clica no botão abaixo pra pagar (Pix ou cartão):`;
 
         const sent = await tgSendMessage(chatId, messageText, {
+          disable_web_page_preview: false,
           reply_markup: {
             inline_keyboard: [[
               { text: "💳 Pagar agora (Pix ou Cartão)", login_url: { url: checkoutUrl } }
