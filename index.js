@@ -22,9 +22,10 @@ if (!DATABASE_URL) console.warn("⚠️ DATABASE_URL não definido");
 
 // ========= PLANOS =========
 const PLANS = {
+  p1h:  { id: "p1h",  label: "1 hora",  amount: 9.90,  durationMs: 1 * 60 * 60 * 1000 },
   p12h: { id: "p12h", label: "12 horas", amount: 49.90, durationMs: 12 * 60 * 60 * 1000 },
   p48h: { id: "p48h", label: "48 horas", amount: 97.90, durationMs: 48 * 60 * 60 * 1000 },
-  p7d: { id: "p7d", label: "7 dias", amount: 197.90, durationMs: 7 * 24 * 60 * 60 * 1000 },
+  p7d:  { id: "p7d",  label: "7 dias",  amount: 197.90, durationMs: 7 * 24 * 60 * 60 * 1000 },
 };
 const DEFAULT_PLAN_ID = "p12h";
 
@@ -36,7 +37,6 @@ const memory = new Map();
 const MAX_MESSAGES = 20;
 const userMsgCount = new Map();
 const awaitingPayment = new Map();
-const pendingByPreferenceId = new Map(); // mantido por compatibilidade, mas não usado
 
 // ========= DB (Postgres) =========
 const pool =
@@ -173,8 +173,9 @@ function escapeMarkdown(text = "") {
 function planKeyboard() {
   return {
     inline_keyboard: [
+      [{ text: "⏱️ 1h — R$ 9,90", callback_data: "PLAN:p1h" }],
       [{ text: "🔥 12h — R$ 49,90", callback_data: "PLAN:p12h" }],
-      [{ text: "😈 48h — R$ 97,90", callback_data: "PLAN:p48h" }],
+      [{ text: "😈 48h — R$ 97,90 ⭐", callback_data: "PLAN:p48h" }],
       [{ text: "💦 7 dias — R$ 197,90", callback_data: "PLAN:p7d" }],
     ],
   };
@@ -455,58 +456,55 @@ app.post("/webhook", async (req, res) => {
     }
     if (data.startsWith("PLAN:")) {
       const planId = data.split(":")[1];
-      // Ajuste 1 + Ajuste 2: verificação segura e com TTL
-      let alreadyPending = false;
-      if (pool) {
-        const r = await pool.query(
-          `SELECT 1 FROM pendings
-           WHERE chat_id = $1
-             AND created_at > NOW() - INTERVAL '2 hours'
-           LIMIT 1`,
-          [chatId]
-        );
-        alreadyPending = r.rowCount > 0;
-      }
-      if (alreadyPending) {
-        await tgAnswerCallback(cbId, "Ainda estou esperando o pagamento amorzinho... Já libero tudo😏🔥");
-        await tgSendMessage(chatId, "Ai amorzinho, faz o pagamento por favor?🙏 Prometo que vou me liberar todinha pra você😈💦");
-        resetInactivityTimer(chatId);
-        return;
-      }
       await tgAnswerCallback(cbId, "Gerando link de pagamento... 😏");
       try {
         const { checkoutUrl, plan } = await createCheckout({ chatId, planId });
         console.log("✅ checkoutUrl:", checkoutUrl);
         console.log("✅ Checkout criado:", { chatId, planId: plan.id, checkoutUrl });
 
-        const messageText =
-          `Ai amorzinho 😌\n\n` +
-          `Você escolheu ${plan.label}.\n` +
-          `Me libera aqui rapidinho que eu fico sem freio 💦\n\n` +
-          `Clica no botão abaixo pra pagar (Pix ou cartão):`;
+        let paymentText = "";
 
-        const sent = await tgSendMessage(chatId, messageText, {
-          disable_web_page_preview: false,
-          reply_markup: {
-            inline_keyboard: [[
-              { text: "💳 Pagar agora (Pix ou Cartão)", login_url: { url: checkoutUrl } }
-            ]]
-          }
-        });
-
-        // Envia link textual como fallback sempre (mais seguro)
-        await tgSendMessage(
-          chatId,
-          `Se não abrir pelo botão, copia e cola no navegador:\n${checkoutUrl}`
-        );
-
-        // Só marca aguardando pagamento se o botão foi enviado com sucesso
-        if (sent.ok) {
-          awaitingPayment.set(chatId, true);
-        } else {
-          console.log("⚠️ Botão falhou, NÃO marquei awaitingPayment (usuário não fica travado)");
+        if (plan.id === "p1h") {
+          paymentText =
+            `⏱️ *Plano 1 hora* – *R$ 9,90*\n\n` +
+            `👉 Clique aqui para pagar (Pix ou Cartão):\n` +
+            `${checkoutUrl}\n\n` +
+            `⏳ Assim que o pagamento for aprovado, eu libero automaticamente 😈`;
         }
 
+        if (plan.id === "p12h") {
+          paymentText =
+            `🔥 *Plano 12 horas* – *R$ 49,90*\n\n` +
+            `👉 Clique aqui para pagar (Pix ou Cartão):\n` +
+            `${checkoutUrl}\n\n` +
+            `⏳ Assim que o pagamento for aprovado, eu libero automaticamente 😈`;
+        }
+
+        if (plan.id === "p48h") {
+          paymentText =
+            `😈 *Plano 48 horas* – *R$ 97,90*\n` +
+            `⭐ Mais escolhido\n\n` +
+            `💬 Recomendo esse, amorzinho…\n` +
+            `aqui eu dou uma atenção especial\n` +
+            `e fico bem mais soltinha 😈🔥\n\n` +
+            `👉 Clique aqui para pagar (Pix ou Cartão):\n` +
+            `${checkoutUrl}`;
+        }
+
+        if (plan.id === "p7d") {
+          paymentText =
+            `💦 *Plano 7 dias* – *R$ 197,90*\n\n` +
+            `👉 Clique aqui para pagar (Pix ou Cartão):\n` +
+            `${checkoutUrl}\n\n` +
+            `⏳ Assim que o pagamento for aprovado, eu libero automaticamente 😈`;
+        }
+
+        await tgSendMessage(chatId, paymentText, {
+          parse_mode: "Markdown",
+          disable_web_page_preview: false,
+        });
+
+        awaitingPayment.set(chatId, true);
         resetInactivityTimer(chatId);
       } catch (err) {
         console.error("❌ Erro ao gerar checkout:", err?.message || err);
@@ -588,9 +586,9 @@ app.post("/webhook", async (req, res) => {
       return;
     }
     if (awaitingPayment.get(chatId)) {
-      await sendPlansMenu(
+      await tgSendMessage(
         chatId,
-        "Hmm… 😏 tô esperando você escolher um pacotinho aí embaixo…\nAssim que liberar eu me solto todinha 💦"
+        "Tô te esperando pagar no link que te mandei 😌\nAssim que confirmar, eu me solto todinha 😈"
       );
       resetInactivityTimer(chatId);
       return;
