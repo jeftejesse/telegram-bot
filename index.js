@@ -206,11 +206,16 @@ async function tgSendMessage(chatId, text, extra = {}) {
     });
 
     const j = await r.json();
+
     if (!j.ok) {
       console.error("Telegram sendMessage FAIL:", j);
+      return { ok: false, error: j };
     }
+
+    return { ok: true, result: j.result };
   } catch (e) {
     console.error("Telegram error:", e.message);
+    return { ok: false, error: e.message };
   }
 }
 
@@ -458,26 +463,41 @@ app.post("/webhook", async (req, res) => {
         return;
       }
       await tgAnswerCallback(cbId, "Gerando link de pagamento... 😏");
-      awaitingPayment.set(chatId, true);
       try {
         const { checkoutUrl, plan } = await createCheckout({ chatId, planId });
+
+        console.log("✅ Checkout criado:", { chatId, planId: plan.id, checkoutUrl });
+
         const messageText =
           `Ai amorzinho 😌\n\n` +
           `Você escolheu ${plan.label}.\n` +
           `Me libera aqui rapidinho que eu fico sem freio 💦\n\n` +
-          `⚠️ Não feche essa tela até concluir o pagamento.\n\n` +
           `Clica no botão abaixo pra pagar (Pix ou cartão):`;
-        await tgSendMessage(chatId, messageText, {
+
+        const sent = await tgSendMessage(chatId, messageText, {
           reply_markup: {
             inline_keyboard: [[
               { text: "💳 Pagar agora (Pix ou Cartão)", url: checkoutUrl }
             ]]
           }
         });
-        console.log("Checkout gerado:", { chatId, checkoutUrl, plan: plan.id });
+
+        // Envia link textual como fallback sempre (mais seguro)
+        await tgSendMessage(
+          chatId,
+          `🔗 Se o botão não abrir, paga direto aqui:\n${checkoutUrl}`
+        );
+
+        // Só marca aguardando pagamento se o botão foi enviado com sucesso
+        if (sent.ok) {
+          awaitingPayment.set(chatId, true);
+        } else {
+          console.log("⚠️ Botão falhou, NÃO marquei awaitingPayment (usuário não fica travado)");
+        }
+
         resetInactivityTimer(chatId);
       } catch (err) {
-        console.error("Erro ao gerar checkout:", err);
+        console.error("❌ Erro ao gerar checkout:", err?.message || err);
         awaitingPayment.delete(chatId);
         await tgSendMessage(chatId, "Ops… deu algum probleminha ao gerar o pagamento 😔 Tenta de novo?");
       }
