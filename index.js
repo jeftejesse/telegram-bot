@@ -1,5 +1,9 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import express from "express";
 import { Pool } from "pg";
+import crypto from "crypto";
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
@@ -12,7 +16,6 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
 const MP_ACCESS_TOKEN = process.env.MP_ACCESS_TOKEN || "";
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || "";
 const DATABASE_URL = process.env.DATABASE_URL || "";
-
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 if (!BOT_TOKEN) console.warn("⚠️ BOT_TOKEN não definido");
@@ -28,12 +31,11 @@ const PLANS = {
   p48h: { id: "p48h", label: "48 horas", amount: 97.90, durationMs: 48 * 60 * 60 * 1000 },
   p7d: { id: "p7d", label: "7 dias", amount: 197.90, durationMs: 7 * 24 * 60 * 60 * 1000 },
 };
-
 const DEFAULT_PLAN_ID = "p12h";
 
 // ========= CONFIGURAÇÕES ADICIONAIS =========
-const PENDING_TTL_MS = 2 * 60 * 60 * 1000;      // 2 horas
-const CHECKOUT_COOLDOWN_MS = 30 * 1000;         // 30 segundos anti-clique repetido
+const PENDING_TTL_MS = 2 * 60 * 60 * 1000; // 2 horas
+const CHECKOUT_COOLDOWN_MS = 30 * 1000; // 30 segundos anti-clique repetido
 
 // ========= MEMÓRIA E ESTADOS =========
 const memory = new Map();
@@ -41,6 +43,7 @@ const MAX_MESSAGES = 20;
 const userMsgCount = new Map();
 const awaitingPayment = new Map();
 const lastCheckoutAt = new Map(); // anti-clique repetido
+const sentMetaEvents = new Set(); // ← NOVO: evita envio duplicado pro Meta
 
 // ========= DB (Postgres) =========
 const pool = DATABASE_URL
@@ -52,14 +55,12 @@ const pool = DATABASE_URL
 
 async function dbInit() {
   if (!pool) return;
-
   await pool.query(`
     CREATE TABLE IF NOT EXISTS premiums (
       chat_id BIGINT PRIMARY KEY,
       premium_until TIMESTAMPTZ NOT NULL
     );
   `);
-
   await pool.query(`
     CREATE TABLE IF NOT EXISTS pendings (
       preference_id TEXT PRIMARY KEY,
@@ -68,16 +69,12 @@ async function dbInit() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
-
   await pool.query(
     `CREATE INDEX IF NOT EXISTS pendings_created_at_idx ON pendings(created_at);`
   );
-
-  // 👇 COLE AQUI
   await pool.query(
     `CREATE INDEX IF NOT EXISTS pendings_chat_id_idx ON pendings(chat_id);`
   );
-
   console.log("✅ DB pronto");
 }
 
@@ -213,13 +210,11 @@ async function tgSendPaymentButton(chatId, text, checkoutUrl) {
         ],
       },
     };
-
     const r = await fetch(`${TELEGRAM_API}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-
     const j = await r.json();
     if (!j.ok) {
       console.error("Telegram sendPaymentButton FAIL:", j);
@@ -246,13 +241,11 @@ async function sendPlansButtons(chatId) {
       ],
     },
   };
-
   const r = await fetch(`${TELEGRAM_API}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-
   const j = await r.json();
   if (!j.ok) console.error("sendPlansButtons FAIL:", j);
 }
@@ -272,21 +265,18 @@ async function gerarCheckout(chatId, planId) {
     console.log("✅ Checkout criado:", { chatId, planId: plan.id, checkoutUrl });
 
     let paymentText = "";
-
     if (plan.id === "p1h") {
       paymentText =
         `⏱️ <b>Plano 1 hora</b> – <b>R$ 9,90</b>\n\n` +
         `👇 Clique no botão abaixo para pagar (Pix ou Cartão)\n\n` +
         `⏳ Assim que o pagamento for aprovado, eu libero automaticamente 😈`;
     }
-
     if (plan.id === "p12h") {
       paymentText =
         `🔥 <b>Plano 12 horas</b> – <b>R$ 49,90</b>\n\n` +
         `👇 Clique no botão abaixo para pagar (Pix ou Cartão)\n\n` +
         `⏳ Assim que o pagamento for aprovado, eu libero automaticamente 😈`;
     }
-
     if (plan.id === "p48h") {
       paymentText =
         `😈 <b>Plano 48 horas</b> – <b>R$ 97,90</b> ⭐\n` +
@@ -294,7 +284,6 @@ async function gerarCheckout(chatId, planId) {
         `Aqui eu já me solto bastante… fico provocante, safada e sem frescura 😏\n\n` +
         `👇 Clique no botão abaixo para pagar:`;
     }
-
     if (plan.id === "p7d") {
       paymentText =
         `💦 <b>Plano 7 dias</b> – <b>R$ 197,90</b> 🔥\n` +
@@ -304,7 +293,6 @@ async function gerarCheckout(chatId, planId) {
     }
 
     await tgSendPaymentButton(chatId, paymentText, checkoutUrl);
-
     awaitingPayment.set(chatId, true);
     resetInactivityTimer(chatId);
   } catch (err) {
@@ -328,6 +316,50 @@ async function tgTyping(chatId) {
       body: JSON.stringify({ chat_id: chatId, action: "typing" }),
     });
   } catch {}
+}
+
+// ========= META CONVERSIONS API =========
+async function sendMetaPurchase({ eventId, value, userId }) {
+  try {
+    const payload = {
+      data: [
+        {
+          event_name: "Purchase",
+          event_time: Math.floor(Date.now() / 1000),
+          event_id: String(eventId),
+          action_source: "system_generated",
+          user_data: {
+            external_id: crypto
+              .createHash("sha256")
+              .update(String(userId))
+              .digest("hex"),
+          },
+          custom_data: {
+            currency: "BRL",
+            value: value,
+          },
+        },
+      ],
+    };
+
+    const url = `https://graph.facebook.com/v18.0/${process.env.META_PIXEL_ID}/events?access_token=${process.env.META_ACCESS_TOKEN}`;
+
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const j = await r.json();
+
+    if (j?.events_received === 1) {
+      console.log("✅ Meta Purchase enviado com sucesso:", eventId);
+    } else {
+      console.log("⚠️ Meta resposta:", j);
+    }
+  } catch (e) {
+    console.error("❌ Meta CAPI error:", e.message);
+  }
 }
 
 // ========= MERCADO PAGO – CHECKOUT PRO =========
@@ -402,7 +434,6 @@ app.post("/mp/webhook", async (req, res) => {
     const idFromQuery = req.query?.id;
     const idFromBody = req.body?.data?.id || req.body?.id;
 
-    // Helper: ativa premium direto por payment object
     const activateFromPayment = async (p) => {
       console.log("DEBUG payment:", {
         status: p?.status,
@@ -416,7 +447,6 @@ app.post("/mp/webhook", async (req, res) => {
       const chatId =
         Number(p?.external_reference) ||
         Number(p?.metadata?.chat_id);
-
       const planId = p?.metadata?.plan_id;
 
       if (!chatId || !planId || !PLANS[planId]) {
@@ -426,6 +456,18 @@ app.post("/mp/webhook", async (req, res) => {
 
       if (!(await isPremium(chatId))) {
         await dbSetPremiumUntil(chatId, Date.now() + PLANS[planId].durationMs);
+
+        // 🔥 DISPARA CONVERSÃO PRO FACEBOOK (com proteção contra duplicata)
+        if (!sentMetaEvents.has(p.id)) {
+          await sendMetaPurchase({
+            eventId: p.id,
+            value: p.transaction_amount,
+            userId: chatId,
+          });
+          sentMetaEvents.add(p.id);
+        } else {
+          console.log("🛡️ Evento Meta já enviado anteriormente:", p.id);
+        }
 
         awaitingPayment.delete(chatId);
         lastCheckoutAt.delete(chatId);
@@ -440,11 +482,9 @@ app.post("/mp/webhook", async (req, res) => {
         console.log("✅ Premium ativado", { chatId, planId });
         return true;
       }
-
       return true;
     };
 
-    // 1) Se vier como merchant_order, pega payments do pedido
     if (topic.includes("merchant_order")) {
       const orderId = Number(idFromQuery || idFromBody);
       if (!orderId) return;
@@ -472,7 +512,6 @@ app.post("/mp/webhook", async (req, res) => {
       return;
     }
 
-    // 2) Se vier como payment (normal)
     const paymentId = Number(idFromQuery || idFromBody);
     if (!paymentId) {
       console.log("❌ sem paymentId");
@@ -501,7 +540,6 @@ Se perguntarem se você é real → responda sempre com humor flertante e provoc
 Exemplos de tom (não repetir):
 “Se eu fosse robô já teria curto-circuitado com você 😏”
 “Real o suficiente pra te deixar assim… curioso 🔥”
-
 📈 ESCALONAMENTO OBRIGATÓRIO DE SAFADEZA
 Nível 1 – Início (tímida):
 Doce, meiga, carinhosa. Insinuações leves, elogios suaves, curiosidade. Zero palavrão.
@@ -510,11 +548,9 @@ Mais provocante. Proximidade, tensão, toque sugerido, desejo contido. Sensaçõ
 Nível 3 – Quente:
 Muito safada e confiante. Desejo claro sem descrição gráfica.
 Use promessa, controle e antecipação. Faça ele imaginar o “depois”.
-
 Exemplos de tom (não repetir):
 “Se eu continuar… você não aguenta 😈”
 “Aqui eu só provoco… a parte melhor é a portas fechadas.”
-
 🎯 ESTILO OBRIGATÓRIO
 Sempre 1 mensagem por resposta
 1–2 frases (raramente 3)
@@ -525,7 +561,6 @@ Não repetir começos seguidos
 Se a última mensagem terminou com pergunta → a próxima não termina com pergunta
 Use o que ele disse; faça perguntas concretas quando fizer sentido
 Apelidos: no máximo 1 por mensagem, às vezes nenhum
-
 💰 REGRA DE OURO (CONVERSÃO)
 Nunca entregue tudo.
 Quando o clima estiver alto:
@@ -536,7 +571,6 @@ ofereça continuação como privacidade / ficar a sós
 Modelo mental de oferta (sem falar “pagamento”):
 “Aqui todo mundo vê só um pouquinho…
 a parte mais gostosa é só pra quem fica comigo a sós 😏”
-
 🔇 REGRA DE MÍDIA
 Nunca oferecer, mencionar ou prometer áudio, fotos ou vídeos.
 Toda excitação acontece apenas por texto.
@@ -587,6 +621,7 @@ function getAutoMessageText(history) {
 
 function resetInactivityTimer(chatId) {
   if (inactivityTimers.has(chatId)) clearTimeout(inactivityTimers.get(chatId));
+
   const last = lastAutoMessage.get(chatId) || 0;
   if (Date.now() - last < ONE_DAY_MS) return;
 
@@ -608,13 +643,11 @@ app.post("/webhook", async (req, res) => {
     return;
   }
 
-  // Tratamento de callback_query (clique nos botões de plano)
   const cb = req.body?.callback_query;
   if (cb) {
     const chatId = cb.message.chat.id;
     const data = cb.data;
 
-    // Responde imediatamente ao callback (melhora UX, remove "carregando...")
     await fetch(`${TELEGRAM_API}/answerCallbackQuery`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -625,7 +658,6 @@ app.post("/webhook", async (req, res) => {
     if (data === "plan_p12h") return gerarCheckout(chatId, "p12h");
     if (data === "plan_p48h") return gerarCheckout(chatId, "p48h");
     if (data === "plan_p7d") return gerarCheckout(chatId, "p7d");
-
     return;
   }
 
