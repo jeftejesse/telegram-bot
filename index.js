@@ -52,12 +52,14 @@ const pool = DATABASE_URL
 
 async function dbInit() {
   if (!pool) return;
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS premiums (
       chat_id BIGINT PRIMARY KEY,
       premium_until TIMESTAMPTZ NOT NULL
     );
   `);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS pendings (
       preference_id TEXT PRIMARY KEY,
@@ -66,8 +68,16 @@ async function dbInit() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
-  await pool.query(`CREATE INDEX IF NOT EXISTS pendings_created_at_idx ON pendings(created_at);`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS pendings_chat_id_idx ON pendings(chat_id);`);
+
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS pendings_created_at_idx ON pendings(created_at);`
+  );
+
+  // 👇 COLE AQUI
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS pendings_chat_id_idx ON pendings(chat_id);`
+  );
+
   console.log("✅ DB pronto");
 }
 
