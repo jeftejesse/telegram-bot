@@ -663,7 +663,7 @@ app.post("/webhook", async (req, res) => {
   console.log("🔥 UPDATE:", chatId, text);
 
   if (text === "/start") {
-    await tgSendMessage(chatId, "Oii amorzinho…😊\n\n Gosto de conversa boa gente interessante.\n\n Você é mais tímido ou ousado?");
+    await tgSendMessage(chatId, "Oii amorzinho…😊\n Gosto de conversa boa gente interessante.\n Você é mais tímido ou ousado?");
     return;
   }
 
