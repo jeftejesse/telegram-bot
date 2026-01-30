@@ -327,7 +327,7 @@ async function sendMetaPurchase({ eventId, value, userId }) {
           event_name: "Purchase",
           event_time: Math.floor(Date.now() / 1000),
           event_id: String(eventId),
-          action_source: "system_generated",
+          action_source: "website",
           user_data: {
             external_id: crypto
               .createHash("sha256")
