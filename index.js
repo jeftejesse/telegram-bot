@@ -40,7 +40,7 @@ const MAX_MESSAGES = 10;
 const HOT_THRESHOLD = 7;
 let lastPendingsCleanup = 0;
 const PENDINGS_CLEANUP_EVERY_MS = 10 * 60 * 1000;
-const CHECKOUT_EXPIRATION_MS = 5 * 60 * 1000; // 5 minutos para expirar awaitingPayment
+const CHECKOUT_EXPIRATION_MS = 5 * 60 * 1000;
 
 // ========= PAYMENT DEDUPE (fallback sem DB) =========
 const paymentDedupeRam = new Map();
@@ -88,11 +88,11 @@ function resetHot(chatId) {
   hotCount.delete(chatId);
 }
 
-// ========= DELAY HUMANO (novo) =========
+// ========= DELAY HUMANO =========
 function humanDelay(text = "") {
-  const base = 700;                    // tempo mínimo fixo
-  const perChar = Math.min(text.length * 20, 1800); // ~20ms por caractere, limitado
-  const jitter = Math.random() * 600;  // variação natural
+  const base = 700;
+  const perChar = Math.min(text.length * 20, 1800);
+  const jitter = Math.random() * 600;
   const ms = base + perChar + jitter;
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -260,6 +260,46 @@ async function cleanupOldPendings() {
   cleanupPaymentDedupeRam();
 }
 
+// ========= META EVENTS (novo genérico + Purchase) =========
+async function sendMetaEvent({ eventName, eventId, userId, value = null }) {
+  if (!process.env.META_PIXEL_ID || !process.env.META_ACCESS_TOKEN) return;
+
+  try {
+    const payload = {
+      data: [
+        {
+          event_name: eventName,
+          event_time: Math.floor(Date.now() / 1000),
+          event_id: String(eventId),
+          action_source: "website",
+          user_data: {
+            external_id: crypto
+              .createHash("sha256")
+              .update(String(userId))
+              .digest("hex"),
+          },
+          custom_data: value
+            ? { currency: "BRL", value: Number(value) }
+            : undefined,
+        },
+      ],
+    };
+
+    const url = `https://graph.facebook.com/v18.0/${process.env.META_PIXEL_ID}/events?access_token=${process.env.META_ACCESS_TOKEN}`;
+
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const j = await r.json();
+    console.log(`📡 Meta ${eventName}:`, j);
+  } catch (e) {
+    console.error(`❌ Meta ${eventName} error:`, e.message);
+  }
+}
+
 // ========= FUNÇÕES DE LOG =========
 async function logEvent({
   chatId,
@@ -389,7 +429,15 @@ const SYS_TEXT = {
 };
 
 async function sendPlansButtons(chatId) {
+  // Novo: ViewContent quando mostra os planos
+  sendMetaEvent({
+    eventName: "ViewContent",
+    eventId: `plans_${chatId}_${Date.now()}`,
+    userId: chatId,
+  }).catch(() => {});
+
   logEvent({ chatId, eventType: "show_plans" }).catch(() => {});
+
   const body = {
     chat_id: chatId,
     text: "Pra eu continuar safadinha com você, escolhe um pacotinho.🙏\nTe prometo que me solto todinha 💦🔥",
@@ -513,43 +561,7 @@ Modelo mental de oferta (sem falar “pagamento”): “Aqui todo mundo vê só 
 
   if (reply.length > 260) reply = reply.slice(0, 257) + "…";
   if (!reply || reply.length < 3) reply = "Chega mais perto e fala de novo 😏";
-
   return reply;
-}
-
-// ========= META CONVERSIONS API =========
-async function sendMetaPurchase({ eventId, value, userId }) {
-  if (!process.env.META_PIXEL_ID || !process.env.META_ACCESS_TOKEN) return;
-  try {
-    const payload = {
-      data: [
-        {
-          event_name: "Purchase",
-          event_time: Math.floor(Date.now() / 1000),
-          event_id: String(eventId),
-          action_source: "website",
-          user_data: {
-            external_id: crypto.createHash("sha256").update(String(userId)).digest("hex"),
-          },
-          custom_data: {
-            currency: "BRL",
-            value: Number(value) || 0,
-          },
-        },
-      ],
-    };
-    const url = `https://graph.facebook.com/v18.0/${process.env.META_PIXEL_ID}/events?access_token=${process.env.META_ACCESS_TOKEN}`;
-    const r = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const j = await r.json();
-    if (j?.events_received === 1) console.log("✅ Meta Purchase enviado com sucesso:", eventId);
-    else console.log("⚠️ Meta resposta:", j);
-  } catch (e) {
-    console.error("❌ Meta CAPI error:", e.message);
-  }
 }
 
 // ========= MERCADO PAGO – CHECKOUT PRO =========
@@ -588,6 +600,15 @@ async function createCheckout({ chatId, planId = DEFAULT_PLAN_ID }) {
     console.error("MP checkout error:", j);
     throw new Error("Falha ao criar checkout");
   }
+
+  // Novo: InitiateCheckout quando cria o link de pagamento
+  sendMetaEvent({
+    eventName: "InitiateCheckout",
+    eventId: j.id,
+    userId: chatId,
+    value: plan.amount,
+  }).catch(() => {});
+
   await dbInsertPending(j.id, chatId, plan.id);
   logEvent({
     chatId,
@@ -596,6 +617,7 @@ async function createCheckout({ chatId, planId = DEFAULT_PLAN_ID }) {
     preferenceId: j.id,
     value: plan.amount,
   }).catch(() => {});
+
   return {
     checkoutUrl: j.init_point,
     plan,
@@ -687,7 +709,6 @@ app.post("/webhook", async (req, res) => {
     return;
   }
 
-  // Tratamento de voz/áudio: vira gatilho de premium se não tiver
   if (msg.voice || msg.audio) {
     const row = await dbGetPremium(chatId);
     const premiumNow = row && Date.now() <= new Date(row.premium_until).getTime();
@@ -697,7 +718,6 @@ app.post("/webhook", async (req, res) => {
       tmark("Voice/Audio → premium notice", t0);
       return;
     }
-    // Se premium, continua normalmente
   }
 
   tgTyping(chatId);
@@ -713,7 +733,7 @@ app.post("/webhook", async (req, res) => {
       justExpired = true;
       await dbDeletePremium(chatId);
       resetHot(chatId);
-      memory.delete(chatId); // Limpa histórico ao expirar
+      memory.delete(chatId);
     } else {
       premiumNow = true;
     }
@@ -721,7 +741,6 @@ app.post("/webhook", async (req, res) => {
 
   const mediaAllowed = premiumNow && (planId === "p48h" || planId === "p7d");
 
-  // Expira awaitingPayment se passou muito tempo sem pagar
   if (!premiumNow && awaitingPayment.get(chatId)) {
     const last = lastCheckoutAt.get(chatId) || 0;
     if (Date.now() - last > CHECKOUT_EXPIRATION_MS) {
@@ -776,7 +795,6 @@ app.post("/webhook", async (req, res) => {
   }
 
   if (!text) {
-    // Se for só voz/áudio e premium, responde algo genérico
     await tgSendMessage(chatId, "Tá me deixando curiosa… me conta por texto o que você quer 😏");
     return;
   }
@@ -806,7 +824,6 @@ app.post("/webhook", async (req, res) => {
 
   userMsgCount.set(chatId, (userMsgCount.get(chatId) || 0) + 1);
 
-  // Delay humano antes de enviar a resposta
   await humanDelay(reply);
   await tgSendMessage(chatId, reply);
 
@@ -866,7 +883,13 @@ app.post("/mp/webhook", async (req, res) => {
       if (!active) {
         await dbSetPremium(chatId, Date.now() + PLANS[planId].durationMs, planId);
         if (payId && !sentMetaEvents.has(payId)) {
-          await sendMetaPurchase({ eventId: payId, value: p.transaction_amount, userId: chatId });
+          // Novo: Purchase via função genérica
+          await sendMetaEvent({
+            eventName: "Purchase",
+            eventId: payId,
+            userId: chatId,
+            value: p.transaction_amount,
+          });
           sentMetaEvents.add(payId);
         }
         awaitingPayment.delete(chatId);
