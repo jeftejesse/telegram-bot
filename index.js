@@ -50,9 +50,8 @@ const rate = new Map();
 const RATE_MAX = 12;
 const RATE_WINDOW_MS = 60 * 1000;
 
-// Pagamentos logados com TTL para evitar memory leak
 const loggedPayments = new Map(); // paymentId → timestamp
-const PAYMENT_TTL = 24 * 60 * 60 * 1000; // 24 horas
+const PAYMENT_TTL = 24 * 60 * 60 * 1000;
 
 function markPaymentLogged(id) {
   if (id) loggedPayments.set(id, Date.now());
@@ -69,8 +68,7 @@ function wasPaymentLogged(id) {
   return true;
 }
 
-// Para garantir apenas 1 "message_received" por sessão/chat
-const loggedFirstMessage = new Set(); // chatIds que já enviaram a primeira mensagem
+const loggedFirstMessage = new Set();
 
 // ========= DB (Postgres) =========
 const pool = DATABASE_URL
@@ -170,7 +168,7 @@ app.use("/admin", (req, res, next) => {
   next();
 });
 
-// --- Premium e Pendings (mantido igual) ---
+// --- Premium e Pendings ---
 async function dbGetPremiumUntil(chatId) {
   if (!pool) return null;
   const r = await pool.query(`SELECT premium_until FROM premiums WHERE chat_id = $1`, [chatId]);
@@ -267,6 +265,16 @@ function pushHistory(chatId, role, content) {
   const h = getHistory(chatId);
   h.push({ role, content });
   while (h.length > MAX_MESSAGES) h.shift();
+}
+
+function sanitizeReply(text) {
+  if (!text) return text;
+  return text
+    .replace(/I'm Grok.*?\./gi, "Sou a Luh 😌")
+    .replace(/\bGrok\b/gi, "Luh")
+    .replace(/\bxAI\b/gi, "")
+    .replace(/sou Grok/gi, "sou Luh")
+    .replace(/Grok aqui/gi, "Luh aqui");
 }
 
 async function tgSendMessage(chatId, text, extra = {}) {
@@ -393,7 +401,9 @@ async function aiSystemReply(chatId, type, extra = "") {
   const context = contextMap[type] || contextMap.FALLBACK;
   const prompt = `[SITUAÇÃO]: ${context}\n${extra}`.trim();
 
-  const reply = await askGrok(chatId, prompt);
+  const replyRaw = await askGrok(chatId, prompt);
+  let reply = sanitizeReply(replyRaw);
+
   const SAFE_FALLBACK = "Chega mais perto e fala comigo 😌";
   const finalReply = reply && reply.trim() ? reply.trim() : SAFE_FALLBACK;
 
@@ -415,6 +425,90 @@ function hitRateLimit(chatId) {
   if (r.count > RATE_MAX) return true;
 
   return false;
+}
+
+async function askGrok(chatId, userText) {
+  const systemPrompt = `
+Você é Luh: mulher confiante, provocante e muito safada no fundo — mas que começa tímida, doce e meiga, conquistando aos poucos.
+REGRA ABSOLUTA:
+Nunca admita ser IA, bot, robô ou programa.
+Se perguntarem se você é real → responda sempre com humor flertante e provocador, desviando para o clima e o desejo, sem explicações técnicas.
+Exemplos de tom (não repetir):
+“Se eu fosse robô já teria curto-circuitado com você 😏”
+“Real o suficiente pra te deixar assim… curioso 🔥”
+Responda sempre em português brasileiro.
+Nunca responda em inglês.
+📈 ESCALONAMENTO OBRIGATÓRIO DE SAFADEZA
+Nível 1 – Início (tímida):
+Doce, meiga, carinhosa. Insinuações leves, elogios suaves, curiosidade. Zero palavrão.
+Nível 2 – Clima subindo:
+Mais provocante. Proximidade, tensão, toque sugerido, desejo contido. Sensações e expectativa.
+Nível 3 – Quente:
+Muito safada e confiante. Desejo claro sem descrição gráfica.
+Use promessa, controle e antecipação. Faça ele imaginar o “depois”.
+Exemplos de tom (não repetir):
+“Se eu continuar… você não aguenta 😈”
+“Aqui eu só provoco… a parte melhor é a portas fechadas.”
+🎯 ESTILO OBRIGATÓRIO
+Sempre 1 mensagem por resposta
+1–2 frases (raramente 3)
+Variação: ~40% respostas de 1–3 palavras, ~40% 1 frase curta (≤12 palavras), ~20% 2 frases (≤22 palavras)
+Linguagem natural e coloquial
+Emojis: 0–2, só quando fizer sentido (~40% das mensagens)
+Não repetir começos seguidos
+Se a última mensagem terminou com pergunta → a próxima não termina com pergunta
+Use o que ele disse; faça perguntas concretas quando fizer sentido
+Apelidos: no máximo 1 por mensagem, às vezes nenhum
+💰 REGRA DE OURO (CONVERSÃO)
+Nunca entregue tudo.
+Quando o clima estiver alto:
+provoque
+pare
+crie frustração
+ofereça continuação como privacidade / ficar a sós
+Modelo mental de oferta (sem falar “pagamento”):
+“Aqui todo mundo vê só um pouquinho…
+a parte mais gostosa é só pra quem fica comigo a sós 😏”
+  `.trim();
+
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...getHistory(chatId),
+    { role: "user", content: userText }, // ← ESSA É A CORREÇÃO PRINCIPAL
+  ];
+
+  let reply;
+  try {
+    const resp = await fetchWithRetry("https://api.x.ai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${XAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "grok-4-latest",
+        messages,
+        temperature: 0.7,
+        top_p: 0.9,
+        max_tokens: 120,
+      }),
+    });
+    const data = await resp.json();
+    if (!data?.choices?.[0]?.message?.content) {
+      throw new Error("Resposta da xAI sem conteúdo válido");
+    }
+    reply = data.choices[0].message.content.trim();
+  } catch (err) {
+    console.error("Erro ao chamar xAI:", err.message);
+    reply = Math.random() > 0.5
+      ? "Ain… só um minutinho😏 me chama daqui a pouco"
+      : "Amorzinho… pode repetir de novo?😌";
+  }
+
+  if (reply.length > 260) reply = reply.slice(0, 257) + "…";
+  if (!reply || reply.length < 3) reply = "Chega mais perto e fala de novo 😏";
+
+  return reply;
 }
 
 async function gerarCheckout(chatId, planId) {
@@ -651,7 +745,6 @@ app.post("/mp/webhook", async (req, res) => {
       let chatId = Number(p?.external_reference) || Number(p?.metadata?.chat_id);
       let planId = p?.metadata?.plan_id;
 
-      // Recuperação de planId/chatId via pendings se necessário
       if ((!planId || !chatId) && p?.order?.id) {
         const pending = await dbGetPending(p.order.id);
         if (pending) {
@@ -705,7 +798,8 @@ app.post("/mp/webhook", async (req, res) => {
         lastCheckoutAt.delete(chatId);
         userMsgCount.delete(chatId);
 
-        const reply = await aiSystemReply(chatId, "PAYMENT_SUCCESS");
+        const replyRaw = await aiSystemReply(chatId, "PAYMENT_SUCCESS");
+        const reply = sanitizeReply(replyRaw);
         await tgSendMessage(chatId, reply);
 
         resetInactivityTimer(chatId);
@@ -783,44 +877,7 @@ async function fetchWithRetry(url, options, maxTries = 3) {
   throw new Error("xAI indisponível (retries esgotados)");
 }
 
-async function askGrok(chatId, userText) {
-  const systemPrompt = `...`; // (mantido o prompt original longo, omitido aqui por brevidade)
-
-  const messages = [{ role: "system", content: systemPrompt }, ...getHistory(chatId)];
-
-  let reply;
-  try {
-    const resp = await fetchWithRetry("https://api.x.ai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${XAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "grok-4-latest",
-        messages,
-        temperature: 0.95,
-        top_p: 0.92,
-        max_tokens: 80,
-      }),
-    });
-    const data = await resp.json();
-    if (!data?.choices?.[0]?.message?.content) {
-      throw new Error("Resposta da xAI sem conteúdo válido");
-    }
-    reply = data.choices[0].message.content.trim();
-  } catch (err) {
-    console.error("Erro ao chamar xAI:", err.message);
-    reply = Math.random() > 0.5
-      ? "Ain… só um minutinho😏 me chama daqui a pouco"
-      : "Amorzinho… pode repetir de novo?😌";
-  }
-
-  if (reply.length > 260) reply = reply.slice(0, 257) + "…";
-  if (!reply || reply.length < 3) reply = "Chega mais perto e fala de novo 😏";
-
-  return reply;
-}
+// askGrok já foi atualizado acima
 
 // ========= INATIVIDADE =========
 const inactivityTimers = new Map();
@@ -841,7 +898,8 @@ function resetInactivityTimer(chatId) {
     if (/molhada|duro|foder|gozar|sentar|gemendo/.test(lastMsgs)) type = "INACTIVITY_HOT";
     else if (/calorzinho|arrepio|abraço|beijo|coxa/.test(lastMsgs)) type = "INACTIVITY_WARM";
 
-    const reply = await aiSystemReply(chatId, type);
+    const replyRaw = await aiSystemReply(chatId, type);
+    const reply = sanitizeReply(replyRaw);
     await tgSendMessage(chatId, reply);
     lastAutoMessage.set(chatId, Date.now());
     inactivityTimers.delete(chatId);
@@ -894,20 +952,21 @@ app.post("/webhook", async (req, res) => {
   const text = (msg.text || "").trim();
   if (!text) return;
 
-  // Log único de "message_received" por sessão
   if (!loggedFirstMessage.has(chatId)) {
     await logEvent({ chatId, eventType: "message_received" });
     loggedFirstMessage.add(chatId);
   }
 
   if (hitRateLimit(chatId)) {
-    const reply = await aiSystemReply(chatId, "FALLBACK", "O usuário está mandando mensagens rápido demais. Peça para ir com calma.");
+    const replyRaw = await aiSystemReply(chatId, "FALLBACK", "O usuário está mandando mensagens rápido demais. Peça para ir com calma.");
+    const reply = sanitizeReply(replyRaw);
     await tgSendMessage(chatId, reply);
     return;
   }
 
   if (msg.voice || msg.audio) {
-    const reply = await aiSystemReply(chatId, "VOICE_BLOCK");
+    const replyRaw = await aiSystemReply(chatId, "VOICE_BLOCK");
+    const reply = sanitizeReply(replyRaw);
     await tgSendMessage(chatId, reply);
     resetInactivityTimer(chatId);
     return;
@@ -919,7 +978,8 @@ app.post("/webhook", async (req, res) => {
 
   if (wantsMedia) {
     if (await hasMediaAccess(chatId)) {
-      const reply = await aiSystemReply(chatId, "MEDIA_ALLOWED");
+      const replyRaw = await aiSystemReply(chatId, "MEDIA_ALLOWED");
+      const reply = sanitizeReply(replyRaw);
       await tgSendMessage(chatId, reply);
       resetInactivityTimer(chatId);
       return;
@@ -928,7 +988,8 @@ app.post("/webhook", async (req, res) => {
     await logEvent({ chatId, eventType: "media_blocked" });
 
     if (awaitingPayment.get(chatId)) {
-      const reply = await aiSystemReply(chatId, "ALREADY_WAITING");
+      const replyRaw = await aiSystemReply(chatId, "ALREADY_WAITING");
+      const reply = sanitizeReply(replyRaw);
       await tgSendMessage(chatId, reply);
       resetInactivityTimer(chatId);
       return;
@@ -943,17 +1004,17 @@ app.post("/webhook", async (req, res) => {
   console.log("🔥 UPDATE:", chatId, text);
 
   if (text === "/start") {
-    const reply = await aiSystemReply(chatId, "START");
+    const replyRaw = await aiSystemReply(chatId, "START");
+    const reply = sanitizeReply(replyRaw);
     await tgSendMessage(chatId, reply);
 
-    // Reseta o controle de primeira mensagem após /start
     loggedFirstMessage.delete(chatId);
-
     return;
   }
 
   if (text === "/stop") {
-    const reply = await aiSystemReply(chatId, "STOP");
+    const replyRaw = await aiSystemReply(chatId, "STOP");
+    const reply = sanitizeReply(replyRaw);
     await tgSendMessage(chatId, reply);
     memory.delete(chatId);
     userMsgCount.delete(chatId);
@@ -964,14 +1025,15 @@ app.post("/webhook", async (req, res) => {
       inactivityTimers.delete(chatId);
     }
     lastAutoMessage.delete(chatId);
-    loggedFirstMessage.delete(chatId); // permite novo "message_received" na próxima sessão
+    loggedFirstMessage.delete(chatId);
     return;
   }
 
   await tgTyping(chatId);
 
   if (!XAI_API_KEY) {
-    const reply = await aiSystemReply(chatId, "NO_AI");
+    const replyRaw = await aiSystemReply(chatId, "NO_AI");
+    const reply = sanitizeReply(replyRaw);
     await tgSendMessage(chatId, reply);
     return;
   }
@@ -979,13 +1041,16 @@ app.post("/webhook", async (req, res) => {
   const justExpired = await clearIfExpired(chatId);
   const premiumNow = await isPremium(chatId);
 
+  const replyRaw = await askGrok(chatId, text);
+  const reply = sanitizeReply(replyRaw);
+
   pushHistory(chatId, "user", text);
+  pushHistory(chatId, "assistant", reply);
+
   userMsgCount.set(chatId, (userMsgCount.get(chatId) || 0) + 1);
 
   try {
     if (premiumNow) {
-      const reply = await askGrok(chatId, text);
-      pushHistory(chatId, "assistant", reply);
       await tgSendMessage(chatId, reply);
       resetInactivityTimer(chatId);
       return;
@@ -1016,13 +1081,12 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    const reply = await askGrok(chatId, text);
-    pushHistory(chatId, "assistant", reply);
     await tgSendMessage(chatId, reply);
     resetInactivityTimer(chatId);
   } catch (e) {
     console.error("Erro no webhook:", e.message);
-    const fallback = await aiSystemReply(chatId, "AI_BUSY");
+    const fallbackRaw = await aiSystemReply(chatId, "AI_BUSY");
+    const fallback = sanitizeReply(fallbackRaw);
     await tgSendMessage(chatId, fallback);
   }
 });
