@@ -25,7 +25,6 @@ if (!DATABASE_URL) console.warn("⚠️ DATABASE_URL não definido");
 
 // ========= PLANOS =========
 const PLANS = {
-  p1h: { id: "p1h", label: "1 hora", amount: 9.90, durationMs: 1 * 60 * 60 * 1000 },
   p12h: { id: "p12h", label: "12 horas", amount: 49.90, durationMs: 12 * 60 * 60 * 1000 },
   p48h: { id: "p48h", label: "48 horas", amount: 97.90, durationMs: 48 * 60 * 60 * 1000 },
   p7d: { id: "p7d", label: "7 dias", amount: 197.90, durationMs: 7 * 24 * 60 * 60 * 1000 },
@@ -233,7 +232,6 @@ async function sendPlansButtons(chatId) {
     parse_mode: "HTML",
     reply_markup: {
       inline_keyboard: [
-        [{ text: "⏱️ 1 hora — R$ 9,90", callback_data: "plan_p1h" }],
         [{ text: "🔥 12 horas — R$ 49,90", callback_data: "plan_p12h" }],
         [{ text: "😈 48 horas — R$ 97,90 ⭐🔥 Recomendado", callback_data: "plan_p48h" }],
         [{ text: "💦 7 dias — R$ 197,90 ⭐🔥 Sem filtro", callback_data: "plan_p7d" }],
@@ -705,7 +703,6 @@ app.post("/webhook", async (req, res) => {
       body: JSON.stringify({ callback_query_id: cb.id }),
     });
 
-    if (data === "plan_p1h") return gerarCheckout(chatId, "p1h");
     if (data === "plan_p12h") return gerarCheckout(chatId, "p12h");
     if (data === "plan_p48h") return gerarCheckout(chatId, "p48h");
     if (data === "plan_p7d") return gerarCheckout(chatId, "p7d");
