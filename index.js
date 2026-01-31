@@ -437,31 +437,9 @@ async function fetchWithTimeout(url, options, timeoutMs = 45000) {
   }
 }
 
-async function fetchWithRetry(url, options, maxTries = 2) {
-  let lastError;
-  for (let attempt = 0; attempt < maxTries; attempt++) {
-    try {
-      const response = await fetchWithTimeout(url, options);
-      if (response.ok) return response;
-      const status = response.status;
-      if (status === 429 || status === 503) {
-        const waitMs = 500 * (attempt + 1);
-        await new Promise(r => setTimeout(r, waitMs));
-        continue;
-      }
-      const body = await response.text().catch(() => "");
-      throw new Error(`HTTP ${status}: ${body}`);
-    } catch (err) {
-      lastError = err;
-      if (err?.name === "AbortError") {
-        console.error("xAI timeout (AbortError) - tentativa", attempt + 1);
-      } else {
-        console.error("Erro ao chamar xAI:", err?.message || err);
-      }
-      if (attempt === maxTries - 1) throw lastError;
-    }
-  }
-  throw lastError || new Error("Serviço indisponível");
+async function fetchWithRetry(url, options) {
+  // Simplificado: apenas 1 tentativa + timeout longo
+  return fetchWithTimeout(url, options);
 }
 
 // ========= xAI / GROK =========
@@ -520,7 +498,11 @@ Modelo mental de oferta (sem falar “pagamento”): “Aqui todo mundo vê só 
     if (!content) throw new Error("Resposta sem conteúdo válido");
     reply = String(content).trim();
   } catch (err) {
-    console.error("Erro ao chamar xAI:", err?.message || err);
+    if (err?.name === "AbortError") {
+      console.warn("⚠️ xAI demorou demais, usando fallback");
+    } else {
+      console.error("Erro ao chamar xAI:", err?.message || err);
+    }
     reply = Math.random() > 0.5
       ? "Ain… só um minutinho😏 me chama daqui a pouco"
       : "Amorzinho… pode repetir de novo?😌";
@@ -941,3 +923,13 @@ dbInit()
     console.error("❌ Falha ao iniciar DB:", e.message);
     app.listen(PORT, () => console.log(`🚀 Bot rodando na porta ${PORT}`));
   });
+
+// Opcional: quando quiser implementar limpeza periódica de memória (exemplo comentado)
+// setInterval(() => {
+//   const now = Date.now();
+//   for (const [chatId, h] of memory.entries()) {
+//     if (!h.length) memory.delete(chatId);
+//   }
+//   // pode adicionar limpeza para rate, awaitingPayment, hotCount se quiser
+//   // ex: if (rate.get(chatId) && now - rate.get(chatId).resetAt > algum tempo) rate.delete(chatId);
+// }, 60 * 60 * 1000); // 1 hora
