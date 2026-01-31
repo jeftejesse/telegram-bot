@@ -480,7 +480,7 @@ Modelo mental de oferta (sem falar “pagamento”): “Aqui todo mundo vê só 
         Authorization: `Bearer ${XAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "grok-beta",
+        model: "grok-4-latest",
         messages,
         temperature: 0.7,
         top_p: 0.85,
