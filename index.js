@@ -383,7 +383,7 @@ async function sendPlansButtons(chatId) {
   logEvent({ chatId, eventType: "show_plans" }).catch(() => {});
   const body = {
     chat_id: chatId,
-    text: "Ain amorzinhoo 😳\nPra eu continuar safadinha com você, escolhe um pacotinho.🙏\nTe prometo que me solto todinha 💦🔥",
+    text: "Pra eu continuar safadinha com você, escolhe um pacotinho.🙏\nTe prometo que me solto todinha 💦🔥",
     parse_mode: "HTML",
     reply_markup: {
       inline_keyboard: [
