@@ -53,12 +53,22 @@ const pool = DATABASE_URL
 
 async function dbInit() {
   if (!pool) return;
+
+  // Cria tabela premiums (já com plan_id)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS premiums (
       chat_id BIGINT PRIMARY KEY,
-      premium_until TIMESTAMPTZ NOT NULL
+      premium_until TIMESTAMPTZ NOT NULL,
+      plan_id TEXT
     );
   `);
+
+  // Adiciona a coluna plan_id se ainda não existir (para bancos já criados)
+  await pool.query(`
+    ALTER TABLE premiums
+    ADD COLUMN IF NOT EXISTS plan_id TEXT;
+  `);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS pendings (
       preference_id TEXT PRIMARY KEY,
@@ -84,16 +94,15 @@ async function dbGetPremiumUntil(chatId) {
   return new Date(r.rows[0].premium_until).getTime();
 }
 
-async function dbSetPremiumUntil(chatId, untilMs) {
+async function dbSetPremium(chatId, untilMs, planId) {
   if (!pool) return;
-  await pool.query(
-    `
-    INSERT INTO premiums (chat_id, premium_until)
-    VALUES ($1, to_timestamp($2 / 1000.0))
-    ON CONFLICT (chat_id) DO UPDATE SET premium_until = EXCLUDED.premium_until
-  `,
-    [chatId, untilMs]
-  );
+  await pool.query(`
+    INSERT INTO premiums (chat_id, premium_until, plan_id)
+    VALUES ($1, to_timestamp($2 / 1000.0), $3)
+    ON CONFLICT (chat_id) DO UPDATE
+      SET premium_until = EXCLUDED.premium_until,
+          plan_id = EXCLUDED.plan_id
+  `, [chatId, untilMs, planId]);
 }
 
 async function dbDeletePremium(chatId) {
@@ -104,6 +113,22 @@ async function dbDeletePremium(chatId) {
 async function isPremium(chatId) {
   const until = await dbGetPremiumUntil(chatId);
   return !!until && Date.now() <= until;
+}
+
+async function hasMediaAccess(chatId) {
+  if (!pool) return false;
+
+  const r = await pool.query(
+    `SELECT premium_until, plan_id FROM premiums WHERE chat_id = $1`,
+    [chatId]
+  );
+
+  if (!r.rowCount) return false;
+
+  const { premium_until, plan_id } = r.rows[0];
+  if (Date.now() > new Date(premium_until).getTime()) return false;
+
+  return plan_id === "p48h" || plan_id === "p7d";
 }
 
 async function clearIfExpired(chatId) {
@@ -439,7 +464,11 @@ app.post("/mp/webhook", async (req, res) => {
         return false;
       }
       if (!(await isPremium(chatId))) {
-        await dbSetPremiumUntil(chatId, Date.now() + PLANS[planId].durationMs);
+        await dbSetPremium(
+          chatId,
+          Date.now() + PLANS[planId].durationMs,
+          planId
+        );
         if (!sentMetaEvents.has(p.id)) {
           await sendMetaPurchase({
             eventId: p.id,
@@ -566,7 +595,7 @@ crie frustração
 ofereça continuação como privacidade / ficar a sós
 Modelo mental de oferta (sem falar “pagamento”):
 “Aqui todo mundo vê só um pouquinho…
-a parte mais gostosa é só pra quem fica comigo a sós😏”
+a parte mais gostosa é só pra quem fica comigo a sós 😏”
   `.trim();
 
   const messages = [{ role: "system", content: systemPrompt }, ...getHistory(chatId)];
@@ -661,8 +690,6 @@ app.post("/webhook", async (req, res) => {
   const text = (msg.text || "").trim();
   if (!text) return;
 
-  const premiumNow = await isPremium(chatId);
-
   if (msg.voice || msg.audio) {
     await tgSendMessage(
       chatId,
@@ -677,7 +704,7 @@ app.post("/webhook", async (req, res) => {
   );
 
   if (wantsMedia) {
-    if (premiumNow) {
+    if (await hasMediaAccess(chatId)) {
       await tgSendMessage(
         chatId,
         "Calma… 😏\nDeixa eu escolher direitinho o que te mandar…"
@@ -727,6 +754,8 @@ app.post("/webhook", async (req, res) => {
   }
 
   const justExpired = await clearIfExpired(chatId);
+  const premiumNow = await isPremium(chatId);
+
   pushHistory(chatId, "user", text);
   userMsgCount.set(chatId, (userMsgCount.get(chatId) || 0) + 1);
 
