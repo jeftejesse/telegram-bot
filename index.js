@@ -88,6 +88,15 @@ function resetHot(chatId) {
   hotCount.delete(chatId);
 }
 
+// ========= DELAY HUMANO (novo) =========
+function humanDelay(text = "") {
+  const base = 700;                    // tempo mínimo fixo
+  const perChar = Math.min(text.length * 20, 1800); // ~20ms por caractere, limitado
+  const jitter = Math.random() * 600;  // variação natural
+  const ms = base + perChar + jitter;
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 // ========= DEBUG TIMER =========
 function tmark(label, start) {
   const ms = Date.now() - start;
@@ -480,12 +489,12 @@ Modelo mental de oferta (sem falar “pagamento”): “Aqui todo mundo vê só 
         Authorization: `Bearer ${XAI_API_KEY}`,
       },
       body: JSON.stringify({
-  model: "grok-4-1-fast-non-reasoning",
-  messages,
-  temperature: 0.7,
-  top_p: 0.85,
-  max_tokens: 70,
-}),
+        model: "grok-4-1-fast-non-reasoning",
+        messages,
+        temperature: 0.7,
+        top_p: 0.85,
+        max_tokens: 70,
+      }),
     });
     const data = await resp.json();
     const content = data?.choices?.[0]?.message?.content;
@@ -504,6 +513,7 @@ Modelo mental de oferta (sem falar “pagamento”): “Aqui todo mundo vê só 
 
   if (reply.length > 260) reply = reply.slice(0, 257) + "…";
   if (!reply || reply.length < 3) reply = "Chega mais perto e fala de novo 😏";
+
   return reply;
 }
 
@@ -687,7 +697,7 @@ app.post("/webhook", async (req, res) => {
       tmark("Voice/Audio → premium notice", t0);
       return;
     }
-    // Se premium, continua normalmente (pode responder depois)
+    // Se premium, continua normalmente
   }
 
   tgTyping(chatId);
@@ -743,7 +753,6 @@ app.post("/webhook", async (req, res) => {
     return;
   }
 
-  // Gatilho quente só se NÃO tiver mídia liberada e NÃO for premium
   if (!mediaAllowed && !premiumNow) {
     if (hotWords.test((text || "").toLowerCase())) {
       const c = incHot(chatId);
@@ -767,7 +776,7 @@ app.post("/webhook", async (req, res) => {
   }
 
   if (!text) {
-    // Se for só voz/áudio e premium, pode responder algo genérico ou pular
+    // Se for só voz/áudio e premium, responde algo genérico
     await tgSendMessage(chatId, "Tá me deixando curiosa… me conta por texto o que você quer 😏");
     return;
   }
@@ -782,6 +791,7 @@ app.post("/webhook", async (req, res) => {
   if (shouldUseQuickCache(norm)) {
     const cached = getQuickCache(cacheKey);
     if (cached) {
+      await humanDelay(cached);
       await tgSendMessage(chatId, cached);
       tmark("Quick cache hit", t0);
       return;
@@ -796,6 +806,8 @@ app.post("/webhook", async (req, res) => {
 
   userMsgCount.set(chatId, (userMsgCount.get(chatId) || 0) + 1);
 
+  // Delay humano antes de enviar a resposta
+  await humanDelay(reply);
   await tgSendMessage(chatId, reply);
 
   if (shouldUseQuickCache(norm)) setQuickCache(cacheKey, reply);
