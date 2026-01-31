@@ -1,6 +1,5 @@
 import dotenv from "dotenv";
 dotenv.config();
-
 import express from "express";
 import { Pool } from "pg";
 import crypto from "crypto";
@@ -43,7 +42,7 @@ const MAX_MESSAGES = 20;
 const userMsgCount = new Map();
 const awaitingPayment = new Map();
 const lastCheckoutAt = new Map(); // anti-clique repetido
-const sentMetaEvents = new Set(); // ← NOVO: evita envio duplicado pro Meta
+const sentMetaEvents = new Set(); // evita envio duplicado pro Meta
 
 // ========= DB (Postgres) =========
 const pool = DATABASE_URL
@@ -341,17 +340,13 @@ async function sendMetaPurchase({ eventId, value, userId }) {
         },
       ],
     };
-
     const url = `https://graph.facebook.com/v18.0/${process.env.META_PIXEL_ID}/events?access_token=${process.env.META_ACCESS_TOKEN}`;
-
     const r = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-
     const j = await r.json();
-
     if (j?.events_received === 1) {
       console.log("✅ Meta Purchase enviado com sucesso:", eventId);
     } else {
@@ -478,6 +473,7 @@ app.post("/mp/webhook", async (req, res) => {
           `✅ Pagamento aprovado!\nLiberado por <b>${PLANS[planId].label}</b> 😈\nVem cá… agora sem limite 🔥`,
           { parse_mode: "HTML" }
         );
+
         resetInactivityTimer(chatId);
         console.log("✅ Premium ativado", { chatId, planId });
         return true;
@@ -531,6 +527,44 @@ app.post("/mp/webhook", async (req, res) => {
 });
 
 // ========= GROK / xAI =========
+async function fetchWithRetry(url, options, maxTries = 3) {
+  let lastError;
+
+  for (let attempt = 0; attempt < maxTries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+
+      if (response.ok) {
+        return response;
+      }
+
+      const status = response.status;
+
+      // Retry apenas em erros típicos de sobrecarga / rate limit
+      if ([429, 503, 502, 504].includes(status)) {
+        const delayMs = 700 * (attempt + 1); // 700 → 1400 → 2100 ms
+        console.warn(`xAI ${status} → retry ${attempt + 1}/${maxTries} após ${delayMs}ms`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        continue;
+      }
+
+      // Outros erros → falha imediata
+      let errorBody = "";
+      try {
+        errorBody = await response.text();
+      } catch {}
+      throw new Error(`xAI respondeu ${status}: ${errorBody || "(sem corpo)"}`);
+    } catch (err) {
+      lastError = err;
+      if (attempt === maxTries - 1) {
+        throw lastError;
+      }
+    }
+  }
+
+  throw new Error(`xAI indisponível após ${maxTries} tentativas`);
+}
+
 async function askGrok(chatId, userText) {
   const systemPrompt = `
 Você é Luh: mulher confiante, provocante e muito safada no fundo — mas que começa tímida, doce e meiga, conquistando aos poucos.
@@ -578,30 +612,47 @@ Toda excitação acontece apenas por texto.
 
   const messages = [{ role: "system", content: systemPrompt }, ...getHistory(chatId)];
 
-  const resp = await fetch("https://api.x.ai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${XAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: "grok-4-latest",
-      messages,
-      temperature: 1.05,
-      top_p: 0.9,
-      max_tokens: 90,
-    }),
-  });
+  let reply;
 
-  const data = await resp.json();
-  if (!resp.ok) {
-    console.error("xAI error:", resp.status, data);
-    return "Hmm… deu uma travadinha aqui 😏 tenta de novo.";
+  try {
+    const resp = await fetchWithRetry("https://api.x.ai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${XAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "grok-4-latest",
+        messages,
+        temperature: 0.95,     // reduzido para maior estabilidade
+        top_p: 0.92,
+        max_tokens: 80,        // um pouco mais conservador
+      }),
+    });
+
+    const data = await resp.json();
+
+    if (!data?.choices?.[0]?.message?.content) {
+      throw new Error("Resposta da xAI sem conteúdo válido");
+    }
+
+    reply = data.choices[0].message.content.trim();
+  } catch (err) {
+    console.error("Erro ao chamar xAI:", err.message);
+
+    // Fallback natural e variado
+    reply = Math.random() > 0.5
+      ? "Ain amorzinho… só vou resolver uma coisinha aqui😏 me chama de novo daqui um minutinho?"
+      : "ah amor pode repetir?😌?";
   }
 
-  let reply = data?.choices?.[0]?.message?.content?.trim();
-  if (!reply) reply = "Chega mais perto e fala de novo 😏";
-  if (reply.length > 260) reply = reply.slice(0, 260) + "…";
+  // Segurança extra
+  if (reply.length > 260) {
+    reply = reply.slice(0, 257) + "…";
+  }
+  if (!reply || reply.length < 3) {
+    reply = "Chega mais perto e fala de novo 😏";
+  }
 
   return reply;
 }
