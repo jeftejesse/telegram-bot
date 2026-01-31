@@ -41,6 +41,25 @@ const HOT_THRESHOLD = 7;
 let lastPendingsCleanup = 0;
 const PENDINGS_CLEANUP_EVERY_MS = 10 * 60 * 1000;
 
+// ========= PAYMENT DEDUPE (fallback sem DB) =========
+const paymentDedupeRam = new Map(); // paymentId -> expiresAt
+const PAYMENT_DEDUPE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+
+function cleanupPaymentDedupeRam() {
+  const now = Date.now();
+  for (const [id, expiresAt] of paymentDedupeRam.entries()) {
+    if (expiresAt <= now) paymentDedupeRam.delete(id);
+  }
+}
+
+function markPaymentLoggedRAM(paymentId) {
+  const now = Date.now();
+  const expiresAt = paymentDedupeRam.get(paymentId);
+  if (expiresAt && expiresAt > now) return false; // já visto
+  paymentDedupeRam.set(paymentId, now + PAYMENT_DEDUPE_TTL_MS);
+  return true; // primeira vez
+}
+
 // ========= MEMÓRIA E ESTADOS =========
 const memory = new Map();
 const userMsgCount = new Map();
@@ -150,15 +169,23 @@ async function dbInit() {
   console.log("✅ DB pronto");
 }
 
-async function wasPaymentLoggedDB(paymentId) {
+async function markPaymentLoggedDB(paymentId) {
   if (!pool) return false;
-  const r = await pool.query(`SELECT 1 FROM payment_dedupe WHERE payment_id = $1`, [paymentId]);
-  return r.rowCount > 0;
+  const r = await pool.query(
+    `INSERT INTO payment_dedupe (payment_id) VALUES ($1)
+     ON CONFLICT DO NOTHING
+     RETURNING payment_id`,
+    [paymentId]
+  );
+  return r.rowCount > 0; // true = inseriu de fato (primeira vez)
 }
 
-async function markPaymentLoggedDB(paymentId) {
+// ========= LIMPEZA DE PAYMENT_DEDUPE =========
+async function dbCleanupOldPaymentDedupe(days = 30) {
   if (!pool) return;
-  await pool.query(`INSERT INTO payment_dedupe (payment_id) VALUES ($1) ON CONFLICT DO NOTHING`, [paymentId]);
+  await pool.query(`DELETE FROM payment_dedupe WHERE created_at < NOW() - ($1::text)::interval`, [
+    `${days} days`,
+  ]);
 }
 
 // ========= DB HELPERS =========
@@ -221,6 +248,8 @@ async function dbCleanupOldPendings(ttlMs) {
 
 async function cleanupOldPendings() {
   await dbCleanupOldPendings(PENDING_TTL_MS);
+  await dbCleanupOldPaymentDedupe(30);
+  cleanupPaymentDedupeRam(); // limpa dedupe RAM também
 }
 
 // ========= FUNÇÕES DE LOG =========
@@ -398,7 +427,7 @@ function hitRateLimit(chatId) {
 }
 
 // ========= HTTP HELPERS =========
-async function fetchWithTimeout(url, options, timeoutMs = 15000) {
+async function fetchWithTimeout(url, options, timeoutMs = 45000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -424,6 +453,11 @@ async function fetchWithRetry(url, options, maxTries = 2) {
       throw new Error(`HTTP ${status}: ${body}`);
     } catch (err) {
       lastError = err;
+      if (err?.name === "AbortError") {
+        console.error("xAI timeout (AbortError) - tentativa", attempt + 1);
+      } else {
+        console.error("Erro ao chamar xAI:", err?.message || err);
+      }
       if (attempt === maxTries - 1) throw lastError;
     }
   }
@@ -802,7 +836,13 @@ app.post("/mp/webhook", async (req, res) => {
         }
       }
 
-      if (p?.id && !(await wasPaymentLoggedDB(p.id))) {
+      const payId = Number(p?.id);
+      const firstTime =
+        payId && !isNaN(payId)
+          ? (pool ? await markPaymentLoggedDB(payId) : markPaymentLoggedRAM(payId))
+          : false;
+
+      if (firstTime) {
         await logEvent({
           chatId,
           eventType:
@@ -810,23 +850,21 @@ app.post("/mp/webhook", async (req, res) => {
             status === "pending" ? "payment_pending" :
             "payment_failed",
           planId,
-          paymentId: p?.id ? Number(p.id) : null,
+          paymentId: payId || null,
           preferenceId: p?.order?.id ? String(p.order.id) : null,
           value: p?.transaction_amount ?? null,
           meta: { status, status_detail: p?.status_detail },
         });
-        await markPaymentLoggedDB(p.id);
+
+        if (status === "pending" && chatId) {
+          await tgSendMessage(chatId, SYS_TEXT.PAYMENT_PENDING);
+        }
+        if (status !== "approved" && status !== "pending" && chatId) {
+          await tgSendMessage(chatId, SYS_TEXT.PAYMENT_FAILED);
+        }
       }
 
-      if (status === "pending") {
-        if (chatId) await tgSendMessage(chatId, SYS_TEXT.PAYMENT_PENDING);
-        return false;
-      }
-
-      if (status !== "approved") {
-        if (chatId) await tgSendMessage(chatId, SYS_TEXT.PAYMENT_FAILED);
-        return false;
-      }
+      if (status !== "approved") return false;
 
       if (!chatId || !planId || !PLANS[planId]) return false;
 
@@ -836,9 +874,9 @@ app.post("/mp/webhook", async (req, res) => {
       if (!active) {
         await dbSetPremium(chatId, Date.now() + PLANS[planId].durationMs, planId);
 
-        if (p?.id && !sentMetaEvents.has(p.id)) {
-          await sendMetaPurchase({ eventId: p.id, value: p.transaction_amount, userId: chatId });
-          sentMetaEvents.add(p.id);
+        if (payId && !sentMetaEvents.has(payId)) {
+          await sendMetaPurchase({ eventId: payId, value: p.transaction_amount, userId: chatId });
+          sentMetaEvents.add(payId);
         }
 
         awaitingPayment.delete(chatId);
@@ -878,7 +916,7 @@ app.post("/mp/webhook", async (req, res) => {
     }
 
     const paymentId = Number(idFromQuery || idFromBody);
-    if (!paymentId) return;
+    if (!paymentId || isNaN(paymentId)) return;
 
     const r = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
       headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
