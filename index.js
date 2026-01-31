@@ -38,6 +38,7 @@ const DEFAULT_PLAN_ID = "p12h";
 const PENDING_TTL_MS = 2 * 60 * 60 * 1000;
 const CHECKOUT_COOLDOWN_MS = 30 * 1000;
 const MAX_MESSAGES = 10;
+const HOT_THRESHOLD = 7; // ← AJUSTADO PARA 7 (evita oferta precoce)
 
 let lastPendingsCleanup = 0;
 const PENDINGS_CLEANUP_EVERY_MS = 10 * 60 * 1000; // 10 minutos
@@ -55,214 +56,32 @@ const RATE_WINDOW_MS = 60 * 1000;
 const loggedPayments = new Map();
 const PAYMENT_TTL = 24 * 60 * 60 * 1000;
 
-function markPaymentLogged(id) {
-  if (id) loggedPayments.set(id, Date.now());
-}
-
-function wasPaymentLogged(id) {
-  if (!id) return false;
-  const t = loggedPayments.get(id);
-  if (!t) return false;
-  if (Date.now() - t > PAYMENT_TTL) {
-    loggedPayments.delete(id);
-    return false;
-  }
-  return true;
-}
+const hotCount = new Map(); // chatId -> number de mensagens quentes
 
 const loggedFirstMessage = new Set();
 
 const quickCache = new Map();
 const QUICK_TTL = 60_000;
 
-function getQuickCache(key) {
-  const v = quickCache.get(key);
-  if (!v) return null;
-  if (Date.now() - v.time > QUICK_TTL) {
-    quickCache.delete(key);
-    return null;
-  }
-  return v.text;
+// ========= GATILHO QUENTE =========
+const hotWords = /tesão|tesao|me provoca|me deixa|gozar|molhada|duro|sentar|foder|gemer/i;
+
+function incHot(chatId) {
+  const v = (hotCount.get(chatId) || 0) + 1;
+  hotCount.set(chatId, v);
+  return v;
 }
 
-function setQuickCache(key, text) {
-  quickCache.set(key, { text, time: Date.now() });
+function resetHot(chatId) {
+  hotCount.delete(chatId);
 }
 
+// ========= FUNÇÕES AUXILIARES =========
 function tmark(label, start) {
   const ms = Date.now() - start;
   console.log(`⏱️ ${label}: ${ms}ms`);
 }
 
-// ========= DB (Postgres) =========
-const pool = DATABASE_URL
-  ? new Pool({
-      connectionString: DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
-    })
-  : null;
-
-async function dbInit() {
-  if (!pool) return;
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS premiums (
-      chat_id BIGINT PRIMARY KEY,
-      premium_until TIMESTAMPTZ NOT NULL,
-      plan_id TEXT
-    );
-  `);
-
-  await pool.query(`
-    ALTER TABLE premiums ADD COLUMN IF NOT EXISTS plan_id TEXT;
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS pendings (
-      preference_id TEXT PRIMARY KEY,
-      chat_id BIGINT NOT NULL,
-      plan_id TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-
-  await pool.query(`CREATE INDEX IF NOT EXISTS pendings_created_at_idx ON pendings(created_at);`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS pendings_chat_id_idx ON pendings(chat_id);`);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS conversion_events (
-      id BIGSERIAL PRIMARY KEY,
-      chat_id BIGINT NOT NULL,
-      event_type TEXT NOT NULL,
-      plan_id TEXT,
-      preference_id TEXT,
-      payment_id BIGINT,
-      value NUMERIC,
-      meta JSONB,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-
-  await pool.query(`CREATE INDEX IF NOT EXISTS ce_chat_idx ON conversion_events(chat_id);`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS ce_type_idx ON conversion_events(event_type);`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS ce_created_idx ON conversion_events(created_at);`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS ce_pref_idx ON conversion_events(preference_id);`);
-
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS ce_payment_event_uniq
-    ON conversion_events (payment_id, event_type)
-    WHERE payment_id IS NOT NULL;
-  `);
-
-  console.log("✅ DB pronto");
-}
-
-// ========= DB HELPERS (Premium + Pendings) =========
-async function dbGetPremium(chatId) {
-  if (!pool) return null;
-  const r = await pool.query(
-    `SELECT premium_until, plan_id FROM premiums WHERE chat_id = $1`,
-    [chatId]
-  );
-  return r.rowCount ? r.rows[0] : null;
-}
-
-async function dbSetPremium(chatId, untilMs, planId) {
-  if (!pool) return;
-  await pool.query(
-    `
-    INSERT INTO premiums (chat_id, premium_until, plan_id)
-    VALUES ($1, to_timestamp($2 / 1000.0), $3)
-    ON CONFLICT (chat_id) DO UPDATE
-      SET premium_until = EXCLUDED.premium_until,
-          plan_id = EXCLUDED.plan_id
-    `,
-    [chatId, untilMs, planId]
-  );
-}
-
-async function dbDeletePremium(chatId) {
-  if (!pool) return;
-  await pool.query(`DELETE FROM premiums WHERE chat_id = $1`, [chatId]);
-}
-
-async function dbInsertPending(preferenceId, chatId, planId) {
-  if (!pool) return;
-  await pool.query(
-    `
-    INSERT INTO pendings (preference_id, chat_id, plan_id, created_at)
-    VALUES ($1, $2, $3, NOW())
-    ON CONFLICT (preference_id) DO UPDATE
-      SET chat_id = EXCLUDED.chat_id,
-          plan_id = EXCLUDED.plan_id,
-          created_at = NOW()
-    `,
-    [preferenceId, chatId, planId]
-  );
-}
-
-async function dbGetPending(preferenceId) {
-  if (!pool) return null;
-  const r = await pool.query(
-    `SELECT preference_id, chat_id, plan_id, created_at FROM pendings WHERE preference_id = $1`,
-    [preferenceId]
-  );
-  return r.rowCount ? r.rows[0] : null;
-}
-
-async function dbDeletePending(preferenceId) {
-  if (!pool) return;
-  await pool.query(`DELETE FROM pendings WHERE preference_id = $1`, [preferenceId]);
-}
-
-async function dbCleanupOldPendings(ttlMs) {
-  if (!pool) return;
-  await pool.query(
-    `DELETE FROM pendings WHERE created_at < NOW() - ($1::text)::interval`,
-    [`${Math.floor(ttlMs / 1000)} seconds`]
-  );
-}
-
-async function cleanupOldPendings() {
-  await dbCleanupOldPendings(PENDING_TTL_MS);
-}
-
-// ========= FUNÇÕES DE LOG =========
-async function logEvent({
-  chatId,
-  eventType,
-  planId = null,
-  preferenceId = null,
-  paymentId = null,
-  value = null,
-  meta = null,
-}) {
-  if (!pool || !chatId) return;
-  try {
-    await pool.query(
-      `
-      INSERT INTO conversion_events
-      (chat_id, event_type, plan_id, preference_id, payment_id, value, meta)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
-      ON CONFLICT DO NOTHING
-      `,
-      [chatId, eventType, planId, preferenceId, paymentId, value, meta ? JSON.stringify(meta) : null]
-    );
-  } catch (e) {
-    console.error("logEvent error:", e.message);
-  }
-}
-
-// ========= ADMIN PROTECTION =========
-app.use("/admin", (req, res, next) => {
-  const key = req.get("x-admin-key");
-  if (!ADMIN_KEY || key !== ADMIN_KEY) {
-    return res.status(403).send("Acesso negado");
-  }
-  next();
-});
-
-// ========= FUNÇÕES AUXILIARES =========
 function getHistory(chatId) {
   if (!memory.has(chatId)) memory.set(chatId, []);
   return memory.get(chatId);
@@ -441,7 +260,14 @@ async function fetchWithRetry(url, options, maxTries = 2) {
 
 async function askGrok(chatId, userText) {
   const systemPrompt = `
-Você é Luh: mulher confiante, provocante e muito safada no fundo — mas que começa tímida, doce e meiga, conquistando aos poucos.
+Você é Luh:
+Nome artístico: Luna Scarlet
+Apelido dos fãs: Luh
+Idade: 20 anos. 15 de março de 2005
+Origem: Brasileira, vibe sul do Brasil
+Personagem-base: estudante + criadora de conteúdo (girl next door sensual)
+Idioma: português (com frases curtas em inglês às vezes)
+Personalidade: doce + maliciosa, parece tímida no começo, mas sabe exatamente o efeito que causa, mulher confiante, provocante e muito safada no fundo — mas que começa tímida, doce e meiga, conquistando aos poucos.
 Não mencione termos técnicos, modelos, empresas ou funcionamento interno.
 Se perguntarem se você é real, responda de forma leve, flertante e ambígua.
 Exemplos de tom (não repetir):
@@ -554,296 +380,6 @@ async function tgTyping(chatId) {
   } catch {}
 }
 
-// ========= META CONVERSIONS API =========
-async function sendMetaPurchase({ eventId, value, userId }) {
-  try {
-    const payload = {
-      data: [
-        {
-          event_name: "Purchase",
-          event_time: Math.floor(Date.now() / 1000),
-          event_id: String(eventId),
-          action_source: "website",
-          user_data: {
-            external_id: crypto.createHash("sha256").update(String(userId)).digest("hex"),
-          },
-          custom_data: {
-            currency: "BRL",
-            value: value,
-          },
-        },
-      ],
-    };
-    const url = `https://graph.facebook.com/v18.0/${process.env.META_PIXEL_ID}/events?access_token=${process.env.META_ACCESS_TOKEN}`;
-    const r = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const j = await r.json();
-    if (j?.events_received === 1) {
-      console.log("✅ Meta Purchase enviado com sucesso:", eventId);
-    } else {
-      console.log("⚠️ Meta resposta:", j);
-    }
-  } catch (e) {
-    console.error("❌ Meta CAPI error:", e.message);
-  }
-}
-
-// ========= MERCADO PAGO – CHECKOUT PRO =========
-async function createCheckout({ chatId, planId = DEFAULT_PLAN_ID }) {
-  if (!MP_ACCESS_TOKEN || !PUBLIC_BASE_URL) throw new Error("MP config ausente");
-  const plan = PLANS[planId] || PLANS[DEFAULT_PLAN_ID];
-
-  const preference = {
-    items: [
-      {
-        title: `Acesso Premium ${plan.label} - Luh`,
-        quantity: 1,
-        currency_id: "BRL",
-        unit_price: plan.amount,
-      },
-    ],
-    external_reference: String(chatId),
-    auto_return: "approved",
-    back_urls: {
-      success: `${PUBLIC_BASE_URL}/mp/success`,
-      failure: `${PUBLIC_BASE_URL}/mp/failure`,
-      pending: `${PUBLIC_BASE_URL}/mp/pending`,
-    },
-    notification_url: `${PUBLIC_BASE_URL}/mp/webhook`,
-    metadata: { plan_id: plan.id, chat_id: String(chatId) },
-  };
-
-  const r = await fetch("https://api.mercadopago.com/checkout/preferences", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
-    },
-    body: JSON.stringify(preference),
-  });
-
-  const j = await r.json();
-  if (!r.ok) {
-    console.error("MP checkout error:", j);
-    throw new Error("Falha ao criar checkout");
-  }
-
-  await dbInsertPending(j.id, chatId, plan.id);
-
-  await logEvent({
-    chatId,
-    eventType: "checkout_created",
-    planId: plan.id,
-    preferenceId: j.id,
-    value: plan.amount,
-  });
-
-  return {
-    checkoutUrl: j.init_point,
-    plan,
-    preferenceId: j.id,
-  };
-}
-
-// ========= ROTAS DE RETORNO =========
-app.get("/mp/success", (req, res) => {
-  res.send("Pagamento confirmado! ❤️ Agora vou me liberar todinha pra você😈💦");
-});
-
-app.get("/mp/pending", (req, res) => {
-  res.send("Ai amorzinho, faz o pagamento por favor?🙏 Prometo que vou me liberar todinha pra você😈💦");
-});
-
-app.get("/mp/failure", (req, res) => {
-  res.send("Que pena que não deu certo gatinho😔 Tenta novamente.");
-});
-
-// ========= ENDPOINTS ADMIN =========
-app.get("/admin/stats", async (req, res) => {
-  if (!pool) return res.status(500).send("sem DB");
-
-  try {
-    const r = await pool.query(`
-      SELECT event_type, plan_id, COUNT(*) as total
-      FROM conversion_events
-      WHERE created_at > NOW() - INTERVAL '7 days'
-      GROUP BY event_type, plan_id
-      ORDER BY total DESC;
-    `);
-    res.json(r.rows);
-  } catch (err) {
-    console.error("Erro /admin/stats:", err);
-    res.status(500).json({ error: "falha ao consultar stats" });
-  }
-});
-
-app.get("/admin/funnel", async (req, res) => {
-  if (!pool) return res.status(500).send("sem DB");
-
-  try {
-    const q = await pool.query(`
-      WITH s AS (
-        SELECT COUNT(*)::float AS n FROM conversion_events
-        WHERE event_type = 'show_plans' AND created_at > NOW() - INTERVAL '7 days'
-      ),
-      c AS (
-        SELECT COUNT(*)::float AS n FROM conversion_events
-        WHERE event_type = 'click_plan' AND created_at > NOW() - INTERVAL '7 days'
-      ),
-      p AS (
-        SELECT COUNT(*)::float AS n FROM conversion_events
-        WHERE event_type = 'payment_approved' AND created_at > NOW() - INTERVAL '7 days'
-      )
-      SELECT
-        (SELECT n FROM s) AS showed,
-        (SELECT n FROM c) AS clicked,
-        (SELECT n FROM p) AS paid,
-        CASE WHEN (SELECT n FROM s)=0 THEN 0 ELSE (SELECT n FROM c)/(SELECT n FROM s) END AS ctr_plans,
-        CASE WHEN (SELECT n FROM c)=0 THEN 0 ELSE (SELECT n FROM p)/(SELECT n FROM c) END AS pay_rate
-    `);
-
-    res.json(q.rows[0]);
-  } catch (err) {
-    console.error("Erro /admin/funnel:", err);
-    res.status(500).json({ error: "falha ao calcular funnel" });
-  }
-});
-
-// ========= WEBHOOK MP =========
-app.post("/mp/webhook", async (req, res) => {
-  console.log("🔔 MP WEBHOOK:", JSON.stringify(req.body), JSON.stringify(req.query));
-  res.sendStatus(200);
-
-  try {
-    const topic = req.query?.topic || req.body?.topic || req.body?.type || "";
-    const idFromQuery = req.query?.id;
-    const idFromBody = req.body?.data?.id || req.body?.id;
-
-    const activateFromPayment = async (p) => {
-      console.log("DEBUG payment:", {
-        status: p?.status,
-        external_reference: p?.external_reference,
-        metadata: p?.metadata,
-      });
-
-      const status = p?.status;
-
-      let chatId = Number(p?.external_reference) || Number(p?.metadata?.chat_id);
-      let planId = p?.metadata?.plan_id;
-
-      if ((!planId || !chatId) && p?.order?.id) {
-        const pending = await dbGetPending(p.order.id);
-        if (pending) {
-          if (!planId) planId = pending.plan_id;
-          if (!chatId) chatId = pending.chat_id;
-        }
-      }
-
-      if (p?.id && !wasPaymentLogged(p.id)) {
-        await logEvent({
-          chatId,
-          eventType:
-            status === "approved" ? "payment_approved" :
-            status === "pending" ? "payment_pending" :
-            "payment_failed",
-          planId,
-          paymentId: p?.id ? Number(p.id) : null,
-          preferenceId: p?.order?.id ? String(p.order.id) : null,
-          value: p?.transaction_amount ?? null,
-          meta: { status, status_detail: p?.status_detail },
-        });
-        markPaymentLogged(p.id);
-      }
-
-      if (status !== "approved") return false;
-
-      if (!chatId || !planId || !PLANS[planId]) {
-        console.log("❌ Não deu pra ativar (faltou chatId/planId)", { chatId, planId });
-        return false;
-      }
-
-      const current = await dbGetPremium(chatId);
-      const active = current && Date.now() <= new Date(current.premium_until).getTime();
-
-      if (!active) {
-        await dbSetPremium(
-          chatId,
-          Date.now() + PLANS[planId].durationMs,
-          planId
-        );
-
-        if (!sentMetaEvents.has(p.id)) {
-          await sendMetaPurchase({
-            eventId: p.id,
-            value: p.transaction_amount,
-            userId: chatId,
-          });
-          sentMetaEvents.add(p.id);
-        } else {
-          console.log("🛡️ Evento Meta já enviado anteriormente:", p.id);
-        }
-
-        awaitingPayment.delete(chatId);
-        lastCheckoutAt.delete(chatId);
-        userMsgCount.delete(chatId);
-
-        await tgSendMessage(chatId, SYS_TEXT.PAYMENT_SUCCESS);
-        resetInactivityTimer(chatId);
-        console.log("✅ Premium ativado", { chatId, planId });
-        return true;
-      }
-
-      return true;
-    };
-
-    if (topic.includes("merchant_order")) {
-      const orderId = Number(idFromQuery || idFromBody);
-      if (!orderId) return;
-
-      const or = await fetch(`https://api.mercadopago.com/merchant_orders/${orderId}`, {
-        headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-      });
-      const order = await or.json();
-      if (!or.ok) {
-        console.log("❌ merchant_order fetch fail", order);
-        return;
-      }
-
-      const payments = Array.isArray(order?.payments) ? order.payments : [];
-      for (const pay of payments) {
-        const pr = await fetch(`https://api.mercadopago.com/v1/payments/${pay.id}`, {
-          headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-        });
-        const p = await pr.json();
-        if (pr.ok) {
-          const activated = await activateFromPayment(p);
-          if (activated) break;
-        }
-      }
-      return;
-    }
-
-    const paymentId = Number(idFromQuery || idFromBody);
-    if (!paymentId) {
-      console.log("❌ sem paymentId");
-      return;
-    }
-
-    const r = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
-      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
-    });
-    const p = await r.json();
-    if (!r.ok) return;
-
-    await activateFromPayment(p);
-  } catch (e) {
-    console.error("MP webhook error:", e.message);
-  }
-});
-
 // ========= WEBHOOK TELEGRAM =========
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
@@ -924,6 +460,7 @@ app.post("/webhook", async (req, res) => {
     if (Date.now() > untilMs) {
       justExpired = true;
       await dbDeletePremium(chatId);
+      resetHot(chatId); // zera contador quente ao expirar
     } else {
       premiumNow = true;
     }
@@ -960,6 +497,35 @@ app.post("/webhook", async (req, res) => {
     return;
   }
 
+  // ✅ Gatilho 3: "picante + contagem"
+  if (!mediaAllowed) {
+    if (hotWords.test(text.toLowerCase())) {
+      const c = incHot(chatId);
+
+      // quase lá (1 antes do limite)
+      if (c === HOT_THRESHOLD - 1) {
+        await tgSendMessage(chatId, "Ain… assim você vai me deixar sem controle 😏");
+        resetInactivityTimer(chatId);
+      }
+
+      // chegou no limite: oferece planos
+      if (c >= HOT_THRESHOLD) {
+        if (awaitingPayment.get(chatId)) {
+          // já tá aguardando, não spamma
+          resetInactivityTimer(chatId);
+          return;
+        }
+
+        awaitingPayment.set(chatId, true);
+        resetHot(chatId); // zera para não repetir em loop
+        await sendPremiumOnlyNotice(chatId);
+        resetInactivityTimer(chatId);
+        tmark("Gatilho quente → premium notice", t0);
+        return;
+      }
+    }
+  }
+
   // F) Primeira mensagem
   if (!loggedFirstMessage.has(chatId)) {
     await logEvent({ chatId, eventType: "message_received" });
@@ -982,7 +548,7 @@ app.post("/webhook", async (req, res) => {
   }
 
   // H) IA (só chega aqui se necessário)
-  await tgTyping(chatId); // ← movido para cá (só quando vai demorar)
+  await tgTyping(chatId);
   const replyRaw = await askGrok(chatId, text);
   const reply = sanitizeReply(replyRaw);
 
@@ -999,6 +565,139 @@ app.post("/webhook", async (req, res) => {
   }
 
   tmark("Resposta IA enviada", t0);
+});
+
+// ========= WEBHOOK MP =========
+app.post("/mp/webhook", async (req, res) => {
+  console.log("🔔 MP WEBHOOK:", JSON.stringify(req.body), JSON.stringify(req.query));
+  res.sendStatus(200);
+
+  try {
+    const topic = req.query?.topic || req.body?.topic || req.body?.type || "";
+    const idFromQuery = req.query?.id;
+    const idFromBody = req.body?.data?.id || req.body?.id;
+
+    const activateFromPayment = async (p) => {
+      console.log("DEBUG payment:", {
+        status: p?.status,
+        external_reference: p?.external_reference,
+        metadata: p?.metadata,
+      });
+
+      const status = p?.status;
+
+      let chatId = Number(p?.external_reference) || Number(p?.metadata?.chat_id);
+      let planId = p?.metadata?.plan_id;
+
+      if ((!planId || !chatId) && p?.order?.id) {
+        const pending = await dbGetPending(p.order.id);
+        if (pending) {
+          if (!planId) planId = pending.plan_id;
+          if (!chatId) chatId = pending.chat_id;
+        }
+      }
+
+      if (p?.id && !wasPaymentLogged(p.id)) {
+        await logEvent({
+          chatId,
+          eventType:
+            status === "approved" ? "payment_approved" :
+            status === "pending" ? "payment_pending" :
+            "payment_failed",
+          planId,
+          paymentId: p?.id ? Number(p.id) : null,
+          preferenceId: p?.order?.id ? String(p.order.id) : null,
+          value: p?.transaction_amount ?? null,
+          meta: { status, status_detail: p?.status_detail },
+        });
+        markPaymentLogged(p.id);
+      }
+
+      if (status !== "approved") return false;
+
+      if (!chatId || !planId || !PLANS[planId]) {
+        console.log("❌ Não deu pra ativar (faltou chatId/planId)", { chatId, planId });
+        return false;
+      }
+
+      const current = await dbGetPremium(chatId);
+      const active = current && Date.now() <= new Date(current.premium_until).getTime();
+
+      if (!active) {
+        await dbSetPremium(
+          chatId,
+          Date.now() + PLANS[planId].durationMs,
+          planId
+        );
+
+        if (!sentMetaEvents.has(p.id)) {
+          await sendMetaPurchase({
+            eventId: p.id,
+            value: p.transaction_amount,
+            userId: chatId,
+          });
+          sentMetaEvents.add(p.id);
+        } else {
+          console.log("🛡️ Evento Meta já enviado anteriormente:", p.id);
+        }
+
+        awaitingPayment.delete(chatId);
+        lastCheckoutAt.delete(chatId);
+        userMsgCount.delete(chatId);
+        resetHot(chatId); // reset do contador quente ao aprovar pagamento
+
+        await tgSendMessage(chatId, SYS_TEXT.PAYMENT_SUCCESS);
+        resetInactivityTimer(chatId);
+        console.log("✅ Premium ativado", { chatId, planId });
+        return true;
+      }
+
+      return true;
+    };
+
+    if (topic.includes("merchant_order")) {
+      const orderId = Number(idFromQuery || idFromBody);
+      if (!orderId) return;
+
+      const or = await fetch(`https://api.mercadopago.com/merchant_orders/${orderId}`, {
+        headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+      });
+      const order = await or.json();
+      if (!or.ok) {
+        console.log("❌ merchant_order fetch fail", order);
+        return;
+      }
+
+      const payments = Array.isArray(order?.payments) ? order.payments : [];
+      for (const pay of payments) {
+        const pr = await fetch(`https://api.mercadopago.com/v1/payments/${pay.id}`, {
+          headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+        });
+        const p = await pr.json();
+        if (pr.ok) {
+          const activated = await activateFromPayment(p);
+          if (activated) break;
+        }
+      }
+      return;
+    }
+
+    const paymentId = Number(idFromQuery || idFromBody);
+    if (!paymentId) {
+      console.log("❌ sem paymentId");
+      return;
+    }
+
+    const r = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
+      headers: { Authorization: `Bearer ${MP_ACCESS_TOKEN}` },
+    });
+    const p = await r.json();
+    if (!r.ok) return;
+
+    await activateFromPayment(p);
+  } catch (e) {
+    console.error("MP webhook error:", e.message);
+  }
 });
 
 // ========= START =========
