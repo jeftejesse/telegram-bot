@@ -28,9 +28,9 @@ if (!ADMIN_KEY) console.warn("⚠️ ADMIN_KEY não definido — /admin desprote
 
 // ========= PLANOS =========
 const PLANS = {
-  p12h: { id: "p12h", label: "12 horas", amount: 49.90, durationMs: 12 * 60 * 60 * 1000 },
-  p48h: { id: "p48h", label: "48 horas", amount: 97.90, durationMs: 48 * 60 * 60 * 1000 },
-  p7d: { id: "p7d", label: "7 dias", amount: 197.90, durationMs: 7 * 24 * 60 * 60 * 1000 },
+  p12h: { id: "p12h", label: "12 horas", amount: 49.9, durationMs: 12 * 60 * 60 * 1000 },
+  p48h: { id: "p48h", label: "48 horas", amount: 97.9, durationMs: 48 * 60 * 60 * 1000 },
+  p7d: { id: "p7d", label: "7 dias", amount: 197.9, durationMs: 7 * 24 * 60 * 60 * 1000 },
 };
 const DEFAULT_PLAN_ID = "p12h";
 
@@ -38,10 +38,10 @@ const DEFAULT_PLAN_ID = "p12h";
 const PENDING_TTL_MS = 2 * 60 * 60 * 1000;
 const CHECKOUT_COOLDOWN_MS = 30 * 1000;
 const MAX_MESSAGES = 10;
-const HOT_THRESHOLD = 7; // ← AJUSTADO PARA 7 (evita oferta precoce)
+const HOT_THRESHOLD = 7;
 
 let lastPendingsCleanup = 0;
-const PENDINGS_CLEANUP_EVERY_MS = 10 * 60 * 1000; // 10 minutos
+const PENDINGS_CLEANUP_EVERY_MS = 10 * 60 * 1000;
 
 // ========= MEMÓRIA E ESTADOS =========
 const memory = new Map();
@@ -49,6 +49,7 @@ const userMsgCount = new Map();
 const awaitingPayment = new Map();
 const lastCheckoutAt = new Map();
 const sentMetaEvents = new Set();
+
 const rate = new Map();
 const RATE_MAX = 12;
 const RATE_WINDOW_MS = 60 * 1000;
@@ -56,11 +57,10 @@ const RATE_WINDOW_MS = 60 * 1000;
 const loggedPayments = new Map();
 const PAYMENT_TTL = 24 * 60 * 60 * 1000;
 
-const hotCount = new Map(); // chatId -> number de mensagens quentes
-
+const hotCount = new Map();
 const loggedFirstMessage = new Set();
 
-const quickCache = new Map();
+const quickCache = new Map(); // key → { text, time }
 const QUICK_TTL = 60_000;
 
 // ========= GATILHO QUENTE =========
@@ -76,12 +76,175 @@ function resetHot(chatId) {
   hotCount.delete(chatId);
 }
 
-// ========= FUNÇÕES AUXILIARES =========
+// ========= DEBUG TIMER =========
 function tmark(label, start) {
   const ms = Date.now() - start;
   console.log(`⏱️ ${label}: ${ms}ms`);
 }
 
+// ========= DEDUPE PAGAMENTO (FIX) =========
+function wasPaymentLogged(paymentId) {
+  const v = loggedPayments.get(paymentId);
+  if (!v) return false;
+  if (Date.now() > v.expiresAt) {
+    loggedPayments.delete(paymentId);
+    return false;
+  }
+  return true;
+}
+
+function markPaymentLogged(paymentId) {
+  loggedPayments.set(paymentId, { expiresAt: Date.now() + PAYMENT_TTL });
+}
+
+// ========= DB =========
+const pool = DATABASE_URL
+  ? new Pool({
+      connectionString: DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+    })
+  : null;
+
+async function dbInit() {
+  if (!pool) {
+    console.log("⚠️ Sem DATABASE_URL, iniciando sem DB");
+    return;
+  }
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS premiums (
+      chat_id BIGINT PRIMARY KEY,
+      premium_until TIMESTAMPTZ NOT NULL,
+      plan_id TEXT
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pendings (
+      preference_id TEXT PRIMARY KEY,
+      chat_id BIGINT NOT NULL,
+      plan_id TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS conversion_events (
+      id BIGSERIAL PRIMARY KEY,
+      chat_id BIGINT NOT NULL,
+      event_type TEXT NOT NULL,
+      plan_id TEXT,
+      preference_id TEXT,
+      payment_id BIGINT,
+      value NUMERIC,
+      meta JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  console.log("✅ DB pronto");
+}
+
+// ========= DB HELPERS =========
+async function dbGetPremium(chatId) {
+  if (!pool) return null;
+  const r = await pool.query(`SELECT premium_until, plan_id FROM premiums WHERE chat_id = $1`, [chatId]);
+  return r.rowCount ? r.rows[0] : null;
+}
+
+async function dbSetPremium(chatId, untilMs, planId) {
+  if (!pool) return;
+  await pool.query(
+    `
+    INSERT INTO premiums (chat_id, premium_until, plan_id)
+    VALUES ($1, to_timestamp($2 / 1000.0), $3)
+    ON CONFLICT (chat_id) DO UPDATE
+      SET premium_until = EXCLUDED.premium_until,
+          plan_id = EXCLUDED.plan_id
+    `,
+    [chatId, untilMs, planId]
+  );
+}
+
+async function dbDeletePremium(chatId) {
+  if (!pool) return;
+  await pool.query(`DELETE FROM premiums WHERE chat_id = $1`, [chatId]);
+}
+
+async function dbInsertPending(preferenceId, chatId, planId) {
+  if (!pool) return;
+  await pool.query(
+    `
+    INSERT INTO pendings (preference_id, chat_id, plan_id, created_at)
+    VALUES ($1, $2, $3, NOW())
+    ON CONFLICT (preference_id) DO UPDATE
+      SET chat_id = EXCLUDED.chat_id,
+          plan_id = EXCLUDED.plan_id,
+          created_at = NOW()
+    `,
+    [preferenceId, chatId, planId]
+  );
+}
+
+async function dbGetPending(preferenceId) {
+  if (!pool) return null;
+  const r = await pool.query(
+    `SELECT preference_id, chat_id, plan_id, created_at FROM pendings WHERE preference_id = $1`,
+    [preferenceId]
+  );
+  return r.rowCount ? r.rows[0] : null;
+}
+
+async function dbDeletePending(preferenceId) {
+  if (!pool) return;
+  await pool.query(`DELETE FROM pendings WHERE preference_id = $1`, [preferenceId]);
+}
+
+async function dbCleanupOldPendings(ttlMs) {
+  if (!pool) return;
+  await pool.query(`DELETE FROM pendings WHERE created_at < NOW() - ($1::text)::interval`, [
+    `${Math.floor(ttlMs / 1000)} seconds`,
+  ]);
+}
+
+async function cleanupOldPendings() {
+  await dbCleanupOldPendings(PENDING_TTL_MS);
+}
+
+// ========= FUNÇÕES DE LOG =========
+// FIX: removido "ON CONFLICT DO NOTHING" (não havia constraint UNIQUE)
+async function logEvent({
+  chatId,
+  eventType,
+  planId = null,
+  preferenceId = null,
+  paymentId = null,
+  value = null,
+  meta = null,
+}) {
+  if (!pool || !chatId) return;
+  try {
+    await pool.query(
+      `
+      INSERT INTO conversion_events
+      (chat_id, event_type, plan_id, preference_id, payment_id, value, meta)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `,
+      [chatId, eventType, planId, preferenceId, paymentId, value, meta ? JSON.stringify(meta) : null]
+    );
+  } catch (e) {
+    console.error("logEvent error:", e.message);
+  }
+}
+
+// ========= ADMIN PROTECTION =========
+app.use("/admin", (req, res, next) => {
+  const key = req.get("x-admin-key");
+  if (!ADMIN_KEY || key !== ADMIN_KEY) return res.status(403).send("Acesso negado");
+  next();
+});
+
+// ========= FUNÇÕES AUXILIARES =========
 function getHistory(chatId) {
   if (!memory.has(chatId)) memory.set(chatId, []);
   return memory.get(chatId);
@@ -105,6 +268,7 @@ function sanitizeReply(text) {
     .replace(/como uma IA.*?\./gi, "");
 }
 
+// ========= TELEGRAM SEND =========
 async function tgSendMessage(chatId, text, extra = {}) {
   try {
     const body = {
@@ -138,14 +302,7 @@ async function tgSendPaymentButton(chatId, text, checkoutUrl) {
       parse_mode: "HTML",
       disable_web_page_preview: true,
       reply_markup: {
-        inline_keyboard: [
-          [
-            {
-              text: "💳 Pagar agora (Pix ou Cartão)",
-              url: checkoutUrl,
-            },
-          ],
-        ],
+        inline_keyboard: [[{ text: "💳 Pagar agora (Pix ou Cartão)", url: checkoutUrl }]],
       },
     };
     const r = await fetch(`${TELEGRAM_API}/sendMessage`, {
@@ -165,6 +322,16 @@ async function tgSendPaymentButton(chatId, text, checkoutUrl) {
   }
 }
 
+async function tgTyping(chatId) {
+  try {
+    await fetch(`${TELEGRAM_API}/sendChatAction`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, action: "typing" }),
+    });
+  } catch {}
+}
+
 async function sendPlansButtons(chatId) {
   await logEvent({ chatId, eventType: "show_plans" });
 
@@ -180,6 +347,7 @@ async function sendPlansButtons(chatId) {
       ],
     },
   };
+
   const r = await fetch(`${TELEGRAM_API}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -209,6 +377,26 @@ const SYS_TEXT = {
   MEDIA_ALLOWED: "Tá… vem… agora eu posso brincar com você 😏",
 };
 
+async function sendPremiumOnlyNotice(chatId) {
+  await tgSendMessage(chatId, SYS_TEXT.PREMIUM_ONLY);
+  await sendPlansButtons(chatId);
+}
+
+// ========= QUICK CACHE =========
+function getQuickCache(key) {
+  const v = quickCache.get(key);
+  if (!v) return null;
+  if (Date.now() - v.time > QUICK_TTL) {
+    quickCache.delete(key);
+    return null;
+  }
+  return v.text;
+}
+function setQuickCache(key, text) {
+  quickCache.set(key, { text, time: Date.now() });
+}
+
+// ========= RATE LIMIT =========
 function hitRateLimit(chatId) {
   const now = Date.now();
   const r = rate.get(chatId);
@@ -219,11 +407,41 @@ function hitRateLimit(chatId) {
   }
 
   r.count += 1;
-  if (r.count > RATE_MAX) return true;
-
-  return false;
+  return r.count > RATE_MAX;
 }
 
+// ========= INATIVIDADE =========
+const inactivityTimers = new Map();
+const lastAutoMessage = new Map();
+const INACTIVITY_TIMEOUT = 60 * 60 * 1000;
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+function resetInactivityTimer(chatId) {
+  if (inactivityTimers.has(chatId)) clearTimeout(inactivityTimers.get(chatId));
+
+  const last = lastAutoMessage.get(chatId) || 0;
+  if (Date.now() - last < ONE_DAY_MS) return;
+
+  const timer = setTimeout(async () => {
+    let type = "INACTIVITY_SOFT";
+    const history = getHistory(chatId);
+    const lastMsgs = history
+      .slice(-4)
+      .map((m) => String(m.content || "").toLowerCase())
+      .join(" ");
+
+    if (/molhada|duro|foder|gozar|sentar|gemendo/.test(lastMsgs)) type = "INACTIVITY_HOT";
+    else if (/calorzinho|arrepio|abraço|beijo|coxa/.test(lastMsgs)) type = "INACTIVITY_WARM";
+
+    await tgSendMessage(chatId, SYS_TEXT[type]);
+    lastAutoMessage.set(chatId, Date.now());
+    inactivityTimers.delete(chatId);
+  }, INACTIVITY_TIMEOUT);
+
+  inactivityTimers.set(chatId, timer);
+}
+
+// ========= HTTP HELPERS =========
 async function fetchWithTimeout(url, options, timeoutMs = 9000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
@@ -244,30 +462,24 @@ async function fetchWithRetry(url, options, maxTries = 2) {
       const status = response.status;
       if (status === 429 || status === 503) {
         const waitMs = 500 * (attempt + 1);
-        await new Promise(r => setTimeout(r, waitMs));
+        await new Promise((r) => setTimeout(r, waitMs));
         continue;
       }
 
       const body = await response.text().catch(() => "");
-      throw new Error(`xAI HTTP ${status}: ${body}`);
+      throw new Error(`HTTP ${status}: ${body}`);
     } catch (err) {
       lastError = err;
       if (attempt === maxTries - 1) throw lastError;
     }
   }
-  throw lastError || new Error("xAI indisponível");
+  throw lastError || new Error("Serviço indisponível");
 }
 
+// ========= xAI =========
 async function askGrok(chatId, userText) {
   const systemPrompt = `
-Você é Luh:
-Nome artístico: Luna Scarlet
-Apelido dos fãs: Luh
-Idade: 20 anos. 15 de março de 2005
-Origem: Brasileira, vibe sul do Brasil
-Personagem-base: estudante + criadora de conteúdo (girl next door sensual)
-Idioma: português (com frases curtas em inglês às vezes)
-Personalidade: doce + maliciosa, parece tímida no começo, mas sabe exatamente o efeito que causa, mulher confiante, provocante e muito safada no fundo — mas que começa tímida, doce e meiga, conquistando aos poucos.
+Você é Luh: mulher confiante, provocante e muito safada no fundo — mas que começa tímida, doce e meiga, conquistando aos poucos.
 Não mencione termos técnicos, modelos, empresas ou funcionamento interno.
 Se perguntarem se você é real, responda de forma leve, flertante e ambígua.
 Exemplos de tom (não repetir):
@@ -293,11 +505,7 @@ Nunca entregue tudo. Quando o clima estiver alto: provoque, pare, crie frustraç
 Modelo mental de oferta (sem falar “pagamento”): “Aqui todo mundo vê só um pouquinho… a parte mais gostosa é só pra quem fica comigo a sós 😏”
   `.trim();
 
-  const messages = [
-    { role: "system", content: systemPrompt },
-    ...getHistory(chatId),
-    { role: "user", content: userText },
-  ];
+  const messages = [{ role: "system", content: systemPrompt }, ...getHistory(chatId), { role: "user", content: userText }];
 
   let reply;
   try {
@@ -315,27 +523,121 @@ Modelo mental de oferta (sem falar “pagamento”): “Aqui todo mundo vê só 
         max_tokens: 120,
       }),
     });
+
     const data = await resp.json();
-    if (!data?.choices?.[0]?.message?.content) {
-      throw new Error("Resposta da xAI sem conteúdo válido");
-    }
-    reply = data.choices[0].message.content.trim();
+    const content = data?.choices?.[0]?.message?.content;
+    if (!content) throw new Error("Resposta sem conteúdo válido");
+    reply = String(content).trim();
   } catch (err) {
-    console.error("Erro ao chamar xAI:", err.message);
-    reply = Math.random() > 0.5
-      ? "Ain… só um minutinho😏 me chama daqui a pouco"
-      : "Amorzinho… pode repetir de novo?😌";
+    console.error("Erro ao chamar xAI:", err?.message || err);
+    reply = Math.random() > 0.5 ? "Ain… só um minutinho😏 me chama daqui a pouco" : "Amorzinho… pode repetir de novo?😌";
   }
 
   if (reply.length > 260) reply = reply.slice(0, 257) + "…";
   if (!reply || reply.length < 3) reply = "Chega mais perto e fala de novo 😏";
-
   return reply;
+}
+
+// ========= META CONVERSIONS API =========
+async function sendMetaPurchase({ eventId, value, userId }) {
+  // FIX: guard de env (não quebrar se não estiver configurado)
+  if (!process.env.META_PIXEL_ID || !process.env.META_ACCESS_TOKEN) return;
+
+  try {
+    const payload = {
+      data: [
+        {
+          event_name: "Purchase",
+          event_time: Math.floor(Date.now() / 1000),
+          event_id: String(eventId),
+          action_source: "website",
+          user_data: {
+            external_id: crypto.createHash("sha256").update(String(userId)).digest("hex"),
+          },
+          custom_data: {
+            currency: "BRL",
+            value: Number(value) || 0,
+          },
+        },
+      ],
+    };
+
+    const url = `https://graph.facebook.com/v18.0/${process.env.META_PIXEL_ID}/events?access_token=${process.env.META_ACCESS_TOKEN}`;
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const j = await r.json();
+
+    if (j?.events_received === 1) console.log("✅ Meta Purchase enviado com sucesso:", eventId);
+    else console.log("⚠️ Meta resposta:", j);
+  } catch (e) {
+    console.error("❌ Meta CAPI error:", e.message);
+  }
+}
+
+// ========= MERCADO PAGO – CHECKOUT PRO =========
+async function createCheckout({ chatId, planId = DEFAULT_PLAN_ID }) {
+  if (!MP_ACCESS_TOKEN || !PUBLIC_BASE_URL) throw new Error("MP config ausente");
+  const plan = PLANS[planId] || PLANS[DEFAULT_PLAN_ID];
+
+  const preference = {
+    items: [
+      {
+        title: `Acesso Premium ${plan.label} - Luh`,
+        quantity: 1,
+        currency_id: "BRL",
+        unit_price: plan.amount,
+      },
+    ],
+    external_reference: String(chatId),
+    auto_return: "approved",
+    back_urls: {
+      success: `${PUBLIC_BASE_URL}/mp/success`,
+      failure: `${PUBLIC_BASE_URL}/mp/failure`,
+      pending: `${PUBLIC_BASE_URL}/mp/pending`,
+    },
+    notification_url: `${PUBLIC_BASE_URL}/mp/webhook`,
+    metadata: { plan_id: plan.id, chat_id: String(chatId) },
+  };
+
+  const r = await fetch("https://api.mercadopago.com/checkout/preferences", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${MP_ACCESS_TOKEN}`,
+    },
+    body: JSON.stringify(preference),
+  });
+
+  const j = await r.json();
+  if (!r.ok) {
+    console.error("MP checkout error:", j);
+    throw new Error("Falha ao criar checkout");
+  }
+
+  await dbInsertPending(j.id, chatId, plan.id);
+
+  await logEvent({
+    chatId,
+    eventType: "checkout_created",
+    planId: plan.id,
+    preferenceId: j.id,
+    value: plan.amount,
+  });
+
+  return {
+    checkoutUrl: j.init_point,
+    plan,
+    preferenceId: j.id,
+  };
 }
 
 async function gerarCheckout(chatId, planId) {
   const now = Date.now();
   const last = lastCheckoutAt.get(chatId) || 0;
+
   if (now - last < CHECKOUT_COOLDOWN_MS) {
     await tgSendMessage(chatId, SYS_TEXT.GENERATING_LINK);
     return;
@@ -349,13 +651,22 @@ async function gerarCheckout(chatId, planId) {
 
     let paymentText = "";
     if (plan.id === "p12h") {
-      paymentText = `🔥 <b>Plano 12 horas</b> – <b>R$ 49,90</b>\n\n👇 Clique no botão abaixo para pagar (Pix ou Cartão)\n\n⏳ Assim que o pagamento for aprovado, eu libero automaticamente 😈`;
+      paymentText =
+        `🔥 <b>Plano 12 horas</b> – <b>R$ 49,90</b>\n\n` +
+        `👇 Clique no botão abaixo para pagar (Pix ou Cartão)\n\n` +
+        `⏳ Assim que o pagamento for aprovado, eu libero automaticamente 😈`;
     }
     if (plan.id === "p48h") {
-      paymentText = `😈 <b>Plano 48 horas</b> – <b>R$ 97,90</b> ⭐\n<b>Conversa + Áudio + Fotos + Vídeos</b>\n\nAqui eu paro de só provocar…\nfico mais próxima, mais intensa, mais real 😏\n\n👇 Clique abaixo pra liberar tudo:`;
+      paymentText =
+        `😈 <b>Plano 48 horas</b> – <b>R$ 97,90</b> ⭐\n<b>Conversa + Áudio + Fotos + Vídeos</b>\n\n` +
+        `Aqui eu paro de só provocar…\nfico mais próxima, mais intensa, mais real 😏\n\n` +
+        `👇 Clique abaixo pra liberar tudo:`;
     }
     if (plan.id === "p7d") {
-      paymentText = `💦 <b>Plano 7 dias</b> – <b>R$ 197,90</b> 🔥\n<b>Conversa + Áudio + Fotos + Vídeos (sem limites)</b>\n\nAqui é outro nível…\nsem pressa, sem freio, sem faltar nada 😈\n\n👇 Clique abaixo pra ficar comigo de verdade:`;
+      paymentText =
+        `💦 <b>Plano 7 dias</b> – <b>R$ 197,90</b> 🔥\n<b>Conversa + Áudio + Fotos + Vídeos (sem limites)</b>\n\n` +
+        `Aqui é outro nível…\nsem pressa, sem freio, sem faltar nada 😈\n\n` +
+        `👇 Clique abaixo pra ficar comigo de verdade:`;
     }
 
     await tgSendPaymentButton(chatId, paymentText, checkoutUrl);
@@ -369,28 +680,20 @@ async function gerarCheckout(chatId, planId) {
   }
 }
 
-// ========= TELEGRAM =========
-async function tgTyping(chatId) {
-  try {
-    await fetch(`${TELEGRAM_API}/sendChatAction`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, action: "typing" }),
-    });
-  } catch {}
-}
-
 // ========= WEBHOOK TELEGRAM =========
 app.post("/webhook", async (req, res) => {
+  // FIX: valida secret ANTES de responder
+  if (WEBHOOK_SECRET && req.get("X-Telegram-Bot-Api-Secret-Token") !== WEBHOOK_SECRET) {
+    console.warn("Secret inválido");
+    return res.sendStatus(401);
+  }
+
+  // responde rápido
   res.sendStatus(200);
 
   const t0 = Date.now();
 
-  if (WEBHOOK_SECRET && req.get("X-Telegram-Bot-Api-Secret-Token") !== WEBHOOK_SECRET) {
-    console.warn("Secret inválido");
-    return;
-  }
-
+  // callback buttons
   const cb = req.body?.callback_query;
   if (cb) {
     const chatId = cb.message.chat.id;
@@ -400,7 +703,7 @@ app.post("/webhook", async (req, res) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ callback_query_id: cb.id }),
-    });
+    }).catch(() => {});
 
     if (data === "plan_p12h") {
       await logEvent({ chatId, eventType: "click_plan", planId: "p12h" });
@@ -417,7 +720,7 @@ app.post("/webhook", async (req, res) => {
     return;
   }
 
-  // A) Cleanup pendings raramente (não bloqueia)
+  // cleanup pendings raramente (não bloqueia)
   if (Date.now() - lastPendingsCleanup > PENDINGS_CLEANUP_EVERY_MS) {
     lastPendingsCleanup = Date.now();
     cleanupOldPendings().catch(() => {});
@@ -432,7 +735,7 @@ app.post("/webhook", async (req, res) => {
 
   tmark("Início processamento", t0);
 
-  // B) Rate limit + voice
+  // rate limit + voice
   if (hitRateLimit(chatId)) {
     await tgSendMessage(chatId, "Calma comigo 😌 manda uma de cada vez.");
     resetInactivityTimer(chatId);
@@ -447,7 +750,7 @@ app.post("/webhook", async (req, res) => {
     return;
   }
 
-  // C) 1 query única de premium
+  // 1 query única de premium
   const row = await dbGetPremium(chatId);
 
   let premiumNow = false;
@@ -457,20 +760,20 @@ app.post("/webhook", async (req, res) => {
   if (row) {
     const untilMs = new Date(row.premium_until).getTime();
     planId = row.plan_id;
+
     if (Date.now() > untilMs) {
       justExpired = true;
       await dbDeletePremium(chatId);
-      resetHot(chatId); // zera contador quente ao expirar
+      resetHot(chatId);
     } else {
       premiumNow = true;
     }
   }
 
   const mediaAllowed = premiumNow && (planId === "p48h" || planId === "p7d");
-
   tmark("DB premium + media check", t0);
 
-  // D) Media block sem query extra
+  // bloqueio de mídia
   const wantsMedia = /foto|selfie|imagem|nude|pelada|mostra|manda foto|áudio|audio|voz|video|vídeo/i.test(text.toLowerCase());
   if (wantsMedia && !mediaAllowed) {
     if (awaitingPayment.get(chatId)) {
@@ -486,7 +789,7 @@ app.post("/webhook", async (req, res) => {
     return;
   }
 
-  // E) Expired → offer plan
+  // expirou
   if (justExpired) {
     if (!awaitingPayment.get(chatId)) {
       awaitingPayment.set(chatId, true);
@@ -497,42 +800,37 @@ app.post("/webhook", async (req, res) => {
     return;
   }
 
-  // ✅ Gatilho 3: "picante + contagem"
-  if (!mediaAllowed) {
-    if (hotWords.test(text.toLowerCase())) {
-      const c = incHot(chatId);
+  // gatilho quente + contagem
+  if (!mediaAllowed && hotWords.test(text.toLowerCase())) {
+    const c = incHot(chatId);
 
-      // quase lá (1 antes do limite)
-      if (c === HOT_THRESHOLD - 1) {
-        await tgSendMessage(chatId, "Ain… assim você vai me deixar sem controle 😏");
+    if (c === HOT_THRESHOLD - 1) {
+      await tgSendMessage(chatId, "Ain… assim você vai me deixar sem controle 😏");
+      resetInactivityTimer(chatId);
+    }
+
+    if (c >= HOT_THRESHOLD) {
+      if (awaitingPayment.get(chatId)) {
         resetInactivityTimer(chatId);
-      }
-
-      // chegou no limite: oferece planos
-      if (c >= HOT_THRESHOLD) {
-        if (awaitingPayment.get(chatId)) {
-          // já tá aguardando, não spamma
-          resetInactivityTimer(chatId);
-          return;
-        }
-
-        awaitingPayment.set(chatId, true);
-        resetHot(chatId); // zera para não repetir em loop
-        await sendPremiumOnlyNotice(chatId);
-        resetInactivityTimer(chatId);
-        tmark("Gatilho quente → premium notice", t0);
         return;
       }
+
+      awaitingPayment.set(chatId, true);
+      resetHot(chatId);
+      await sendPremiumOnlyNotice(chatId);
+      resetInactivityTimer(chatId);
+      tmark("Gatilho quente → premium notice", t0);
+      return;
     }
   }
 
-  // F) Primeira mensagem
+  // primeira mensagem
   if (!loggedFirstMessage.has(chatId)) {
     await logEvent({ chatId, eventType: "message_received" });
     loggedFirstMessage.add(chatId);
   }
 
-  // G) Quick cache
+  // quick cache
   const norm = text
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]/gu, "")
@@ -547,7 +845,7 @@ app.post("/webhook", async (req, res) => {
     return;
   }
 
-  // H) IA (só chega aqui se necessário)
+  // IA
   await tgTyping(chatId);
   const replyRaw = await askGrok(chatId, text);
   const reply = sanitizeReply(replyRaw);
@@ -560,9 +858,7 @@ app.post("/webhook", async (req, res) => {
   await tgSendMessage(chatId, reply);
   resetInactivityTimer(chatId);
 
-  if (norm.length <= 12) {
-    setQuickCache(`${chatId}:${norm}`, reply);
-  }
+  if (norm.length <= 12) setQuickCache(`${chatId}:${norm}`, reply);
 
   tmark("Resposta IA enviada", t0);
 });
@@ -597,13 +893,11 @@ app.post("/mp/webhook", async (req, res) => {
         }
       }
 
+      // dedupe log (FIX)
       if (p?.id && !wasPaymentLogged(p.id)) {
         await logEvent({
           chatId,
-          eventType:
-            status === "approved" ? "payment_approved" :
-            status === "pending" ? "payment_pending" :
-            "payment_failed",
+          eventType: status === "approved" ? "payment_approved" : status === "pending" ? "payment_pending" : "payment_failed",
           planId,
           paymentId: p?.id ? Number(p.id) : null,
           preferenceId: p?.order?.id ? String(p.order.id) : null,
@@ -624,27 +918,23 @@ app.post("/mp/webhook", async (req, res) => {
       const active = current && Date.now() <= new Date(current.premium_until).getTime();
 
       if (!active) {
-        await dbSetPremium(
-          chatId,
-          Date.now() + PLANS[planId].durationMs,
-          planId
-        );
+        await dbSetPremium(chatId, Date.now() + PLANS[planId].durationMs, planId);
 
-        if (!sentMetaEvents.has(p.id)) {
+        if (p?.id && !sentMetaEvents.has(p.id)) {
           await sendMetaPurchase({
             eventId: p.id,
             value: p.transaction_amount,
             userId: chatId,
           });
           sentMetaEvents.add(p.id);
-        } else {
+        } else if (p?.id) {
           console.log("🛡️ Evento Meta já enviado anteriormente:", p.id);
         }
 
         awaitingPayment.delete(chatId);
         lastCheckoutAt.delete(chatId);
         userMsgCount.delete(chatId);
-        resetHot(chatId); // reset do contador quente ao aprovar pagamento
+        resetHot(chatId);
 
         await tgSendMessage(chatId, SYS_TEXT.PAYMENT_SUCCESS);
         resetInactivityTimer(chatId);
@@ -655,7 +945,7 @@ app.post("/mp/webhook", async (req, res) => {
       return true;
     };
 
-    if (topic.includes("merchant_order")) {
+    if (String(topic).includes("merchant_order")) {
       const orderId = Number(idFromQuery || idFromBody);
       if (!orderId) return;
 
