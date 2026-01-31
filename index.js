@@ -456,7 +456,7 @@ async function askGrok(chatId, userText, isPremium) {
         Authorization: `Bearer ${XAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "grok-2-latest",           // ← alterado aqui (ou grok-beta / grok-2-mini se disponível)
+        model: "grok-4-latest",           // ← alterado aqui (ou grok-beta / grok-2-mini se disponível)
         messages,
         temperature: 0.7,
         top_p: 0.85,
