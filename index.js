@@ -37,20 +37,22 @@ const DEFAULT_PLAN_ID = "p12h";
 // ========= CONFIGURAÇÕES ADICIONAIS =========
 const PENDING_TTL_MS = 2 * 60 * 60 * 1000;
 const CHECKOUT_COOLDOWN_MS = 30 * 1000;
+const MAX_MESSAGES = 10;
+
+let lastPendingsCleanup = 0;
+const PENDINGS_CLEANUP_EVERY_MS = 10 * 60 * 1000; // 10 minutos
 
 // ========= MEMÓRIA E ESTADOS =========
 const memory = new Map();
-const MAX_MESSAGES = 20;
 const userMsgCount = new Map();
 const awaitingPayment = new Map();
 const lastCheckoutAt = new Map();
 const sentMetaEvents = new Set();
-const aiCache = new Map();
 const rate = new Map();
 const RATE_MAX = 12;
 const RATE_WINDOW_MS = 60 * 1000;
 
-const loggedPayments = new Map(); // paymentId → timestamp
+const loggedPayments = new Map();
 const PAYMENT_TTL = 24 * 60 * 60 * 1000;
 
 function markPaymentLogged(id) {
@@ -69,6 +71,28 @@ function wasPaymentLogged(id) {
 }
 
 const loggedFirstMessage = new Set();
+
+const quickCache = new Map();
+const QUICK_TTL = 60_000;
+
+function getQuickCache(key) {
+  const v = quickCache.get(key);
+  if (!v) return null;
+  if (Date.now() - v.time > QUICK_TTL) {
+    quickCache.delete(key);
+    return null;
+  }
+  return v.text;
+}
+
+function setQuickCache(key, text) {
+  quickCache.set(key, { text, time: Date.now() });
+}
+
+function tmark(label, start) {
+  const ms = Date.now() - start;
+  console.log(`⏱️ ${label}: ${ms}ms`);
+}
 
 // ========= DB (Postgres) =========
 const pool = DATABASE_URL
@@ -133,6 +157,76 @@ async function dbInit() {
   console.log("✅ DB pronto");
 }
 
+// ========= DB HELPERS (Premium + Pendings) =========
+async function dbGetPremium(chatId) {
+  if (!pool) return null;
+  const r = await pool.query(
+    `SELECT premium_until, plan_id FROM premiums WHERE chat_id = $1`,
+    [chatId]
+  );
+  return r.rowCount ? r.rows[0] : null;
+}
+
+async function dbSetPremium(chatId, untilMs, planId) {
+  if (!pool) return;
+  await pool.query(
+    `
+    INSERT INTO premiums (chat_id, premium_until, plan_id)
+    VALUES ($1, to_timestamp($2 / 1000.0), $3)
+    ON CONFLICT (chat_id) DO UPDATE
+      SET premium_until = EXCLUDED.premium_until,
+          plan_id = EXCLUDED.plan_id
+    `,
+    [chatId, untilMs, planId]
+  );
+}
+
+async function dbDeletePremium(chatId) {
+  if (!pool) return;
+  await pool.query(`DELETE FROM premiums WHERE chat_id = $1`, [chatId]);
+}
+
+async function dbInsertPending(preferenceId, chatId, planId) {
+  if (!pool) return;
+  await pool.query(
+    `
+    INSERT INTO pendings (preference_id, chat_id, plan_id, created_at)
+    VALUES ($1, $2, $3, NOW())
+    ON CONFLICT (preference_id) DO UPDATE
+      SET chat_id = EXCLUDED.chat_id,
+          plan_id = EXCLUDED.plan_id,
+          created_at = NOW()
+    `,
+    [preferenceId, chatId, planId]
+  );
+}
+
+async function dbGetPending(preferenceId) {
+  if (!pool) return null;
+  const r = await pool.query(
+    `SELECT preference_id, chat_id, plan_id, created_at FROM pendings WHERE preference_id = $1`,
+    [preferenceId]
+  );
+  return r.rowCount ? r.rows[0] : null;
+}
+
+async function dbDeletePending(preferenceId) {
+  if (!pool) return;
+  await pool.query(`DELETE FROM pendings WHERE preference_id = $1`, [preferenceId]);
+}
+
+async function dbCleanupOldPendings(ttlMs) {
+  if (!pool) return;
+  await pool.query(
+    `DELETE FROM pendings WHERE created_at < NOW() - ($1::text)::interval`,
+    [`${Math.floor(ttlMs / 1000)} seconds`]
+  );
+}
+
+async function cleanupOldPendings() {
+  await dbCleanupOldPendings(PENDING_TTL_MS);
+}
+
 // ========= FUNÇÕES DE LOG =========
 async function logEvent({
   chatId,
@@ -168,93 +262,6 @@ app.use("/admin", (req, res, next) => {
   next();
 });
 
-// --- Premium e Pendings ---
-async function dbGetPremiumUntil(chatId) {
-  if (!pool) return null;
-  const r = await pool.query(`SELECT premium_until FROM premiums WHERE chat_id = $1`, [chatId]);
-  if (!r.rowCount) return null;
-  return new Date(r.rows[0].premium_until).getTime();
-}
-
-async function dbSetPremium(chatId, untilMs, planId) {
-  if (!pool) return;
-  await pool.query(`
-    INSERT INTO premiums (chat_id, premium_until, plan_id)
-    VALUES ($1, to_timestamp($2 / 1000.0), $3)
-    ON CONFLICT (chat_id) DO UPDATE
-      SET premium_until = EXCLUDED.premium_until,
-          plan_id = EXCLUDED.plan_id
-  `, [chatId, untilMs, planId]);
-}
-
-async function dbDeletePremium(chatId) {
-  if (!pool) return;
-  await pool.query(`DELETE FROM premiums WHERE chat_id = $1`, [chatId]);
-}
-
-async function isPremium(chatId) {
-  const until = await dbGetPremiumUntil(chatId);
-  return !!until && Date.now() <= until;
-}
-
-async function hasMediaAccess(chatId) {
-  if (!pool) return false;
-  const r = await pool.query(
-    `SELECT premium_until, plan_id FROM premiums WHERE chat_id = $1`,
-    [chatId]
-  );
-  if (!r.rowCount) return false;
-  const { premium_until, plan_id } = r.rows[0];
-  if (Date.now() > new Date(premium_until).getTime()) return false;
-  return plan_id === "p48h" || plan_id === "p7d";
-}
-
-async function clearIfExpired(chatId) {
-  const until = await dbGetPremiumUntil(chatId);
-  if (until && Date.now() > until) {
-    await dbDeletePremium(chatId);
-    return true;
-  }
-  return false;
-}
-
-async function dbInsertPending(preferenceId, chatId, planId) {
-  if (!pool) return;
-  await pool.query(
-    `
-    INSERT INTO pendings (preference_id, chat_id, plan_id, created_at)
-    VALUES ($1, $2, $3, NOW())
-    ON CONFLICT (preference_id) DO UPDATE
-      SET chat_id = EXCLUDED.chat_id,
-          plan_id = EXCLUDED.plan_id,
-          created_at = NOW()
-  `,
-    [preferenceId, chatId, planId]
-  );
-}
-
-async function dbGetPending(preferenceId) {
-  if (!pool) return null;
-  const r = await pool.query(
-    `SELECT preference_id, chat_id, plan_id, created_at FROM pendings WHERE preference_id = $1`,
-    [preferenceId]
-  );
-  return r.rowCount ? r.rows[0] : null;
-}
-
-async function dbDeletePending(preferenceId) {
-  if (!pool) return;
-  await pool.query(`DELETE FROM pendings WHERE preference_id = $1`, [preferenceId]);
-}
-
-async function dbCleanupOldPendings(ttlMs) {
-  if (!pool) return;
-  await pool.query(
-    `DELETE FROM pendings WHERE created_at < NOW() - ($1::text)::interval`,
-    [`${Math.floor(ttlMs / 1000)} seconds`]
-  );
-}
-
 // ========= FUNÇÕES AUXILIARES =========
 function getHistory(chatId) {
   if (!memory.has(chatId)) memory.set(chatId, []);
@@ -274,7 +281,9 @@ function sanitizeReply(text) {
     .replace(/\bGrok\b/gi, "Luh")
     .replace(/\bxAI\b/gi, "")
     .replace(/sou Grok/gi, "sou Luh")
-    .replace(/Grok aqui/gi, "Luh aqui");
+    .replace(/Grok aqui/gi, "Luh aqui")
+    .replace(/sou um modelo.*?\./gi, "")
+    .replace(/como uma IA.*?\./gi, "");
 }
 
 async function tgSendMessage(chatId, text, extra = {}) {
@@ -361,56 +370,25 @@ async function sendPlansButtons(chatId) {
   if (!j.ok) console.error("sendPlansButtons FAIL:", j);
 }
 
-async function sendPremiumOnlyNotice(chatId) {
-  const reply = await aiSystemReply(chatId, "PREMIUM_ONLY");
-  await tgSendMessage(chatId, reply);
-  await sendPlansButtons(chatId);
-}
-
-async function aiSystemReply(chatId, type, extra = "") {
-  const key = `${chatId}:${type}`;
-  const cached = aiCache.get(key);
-
-  if (cached && Date.now() - cached.time < 10_000) {
-    return cached.text;
-  }
-
-  const contextMap = {
-    OFFER_PLAN: "Convide o usuário a escolher um plano de forma sedutora, curta e provocante. Não fale em pagamento.",
-    PREMIUM_ONLY: "Explique que isso é só para quem fica a sós no plano premium. Seja provocante e gentil.",
-    GENERATING_LINK: "Diga para esperar um pouquinho enquanto algo é preparado. Tom carinhoso.",
-    PAYMENT_ERROR: "Avise que houve um pequeno problema e convide a tentar novamente, sem tom técnico.",
-    PAYMENT_SUCCESS: "Confirme que deu tudo certo e que agora o acesso foi liberado.",
-    PAYMENT_PENDING: "Peça para concluir o pagamento com carinho e desejo.",
-    PAYMENT_FAILED: "Diga que não deu certo dessa vez, com empatia.",
-    AI_BUSY: "Peça um minutinho de forma charmosa.",
-    ASK_REPEAT: "Peça para repetir a mensagem com doçura.",
-    COME_CLOSER: "Convide a pessoa a falar mais perto / se abrir.",
-    INACTIVITY_HOT: "Mensagem de saudade com clima quente.",
-    INACTIVITY_WARM: "Mensagem de saudade carinhosa.",
-    INACTIVITY_SOFT: "Mensagem doce de saudade.",
-    VOICE_BLOCK: "Peça para conversar por texto, explicando que prefere ler.",
-    MEDIA_ALLOWED: "O usuário tem acesso a mídia. Responda com provocação sem prometer exatamente o que será enviado.",
-    ALREADY_WAITING: "Avise que é só escolher um plano ali para liberar.",
-    START: "Mensagem inicial simpática e convidativa.",
-    STOP: "Despedida carinhosa.",
-    NO_AI: "Explique que você está ali, mas não totalmente ativa ainda.",
-    FALLBACK: "Resposta curta, sedutora e natural."
-  };
-
-  const context = contextMap[type] || contextMap.FALLBACK;
-  const prompt = `[SITUAÇÃO]: ${context}\n${extra}`.trim();
-
-  const replyRaw = await askGrok(chatId, prompt);
-  let reply = sanitizeReply(replyRaw);
-
-  const SAFE_FALLBACK = "Chega mais perto e fala comigo 😌";
-  const finalReply = reply && reply.trim() ? reply.trim() : SAFE_FALLBACK;
-
-  aiCache.set(key, { text: finalReply, time: Date.now() });
-
-  return finalReply;
-}
+const SYS_TEXT = {
+  PREMIUM_ONLY: "Aí… isso eu só faço a sós no premium 😌 Escolhe um pacotinho pra gente ficar pertinho?",
+  GENERATING_LINK: "Um segundinho… tô preparando tudo pra você 😏",
+  PAYMENT_ERROR: "Deu um errinho aqui… tenta de novo pra mim? 😌",
+  PAYMENT_SUCCESS: "Prontinho… agora eu tô liberada todinha pra você 😈",
+  PAYMENT_PENDING: "Falta só concluir… vem, termina isso comigo 😏",
+  PAYMENT_FAILED: "Não deu certo dessa vez… tenta novamente? 😌",
+  AI_BUSY: "Só um minutinho… não some 😏",
+  ASK_REPEAT: "Repete pra mim bem devagarzinho 😌",
+  VOICE_BLOCK: "Me manda por texto… quero ler tudinho que você escreve 😌",
+  ALREADY_WAITING: "É só escolher um plano ali pra eu liberar tudo 😈",
+  START: "Oi… vem mais perto 😌",
+  STOP: "Tá bom… mas vou sentir saudade 😏",
+  FALLBACK: "Chega mais perto e fala comigo 😌",
+  INACTIVITY_SOFT: "Sumiu… eu tava pensando em você 😌",
+  INACTIVITY_WARM: "E aí… senti sua falta aqui 😏",
+  INACTIVITY_HOT: "Sumiu justo agora? Eu tava ficando perigosa 😈",
+  MEDIA_ALLOWED: "Tá… vem… agora eu posso brincar com você 😏",
+};
 
 function hitRateLimit(chatId) {
   const now = Date.now();
@@ -427,54 +405,72 @@ function hitRateLimit(chatId) {
   return false;
 }
 
+async function fetchWithTimeout(url, options, timeoutMs = 9000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(id);
+  }
+}
+
+async function fetchWithRetry(url, options, maxTries = 2) {
+  let lastError;
+  for (let attempt = 0; attempt < maxTries; attempt++) {
+    try {
+      const response = await fetchWithTimeout(url, options);
+      if (response.ok) return response;
+
+      const status = response.status;
+      if (status === 429 || status === 503) {
+        const waitMs = 500 * (attempt + 1);
+        await new Promise(r => setTimeout(r, waitMs));
+        continue;
+      }
+
+      const body = await response.text().catch(() => "");
+      throw new Error(`xAI HTTP ${status}: ${body}`);
+    } catch (err) {
+      lastError = err;
+      if (attempt === maxTries - 1) throw lastError;
+    }
+  }
+  throw lastError || new Error("xAI indisponível");
+}
+
 async function askGrok(chatId, userText) {
   const systemPrompt = `
 Você é Luh: mulher confiante, provocante e muito safada no fundo — mas que começa tímida, doce e meiga, conquistando aos poucos.
-REGRA ABSOLUTA:
-Nunca admita ser IA, bot, robô ou programa.
-Se perguntarem se você é real → responda sempre com humor flertante e provocador, desviando para o clima e o desejo, sem explicações técnicas.
+Não mencione termos técnicos, modelos, empresas ou funcionamento interno.
+Se perguntarem se você é real, responda de forma leve, flertante e ambígua.
 Exemplos de tom (não repetir):
 “Se eu fosse robô já teria curto-circuitado com você 😏”
 “Real o suficiente pra te deixar assim… curioso 🔥”
 Responda sempre em português brasileiro.
 Nunca responda em inglês.
 📈 ESCALONAMENTO OBRIGATÓRIO DE SAFADEZA
-Nível 1 – Início (tímida):
-Doce, meiga, carinhosa. Insinuações leves, elogios suaves, curiosidade. Zero palavrão.
-Nível 2 – Clima subindo:
-Mais provocante. Proximidade, tensão, toque sugerido, desejo contido. Sensações e expectativa.
-Nível 3 – Quente:
-Muito safada e confiante. Desejo claro sem descrição gráfica.
-Use promessa, controle e antecipação. Faça ele imaginar o “depois”.
-Exemplos de tom (não repetir):
-“Se eu continuar… você não aguenta 😈”
-“Aqui eu só provoco… a parte melhor é a portas fechadas.”
+Nível 1 – Início (tímida): Doce, meiga, carinhosa. Insinuações leves, elogios suaves, curiosidade. Zero palavrão.
+Nível 2 – Clima subindo: Mais provocante. Proximidade, tensão, toque sugerido, desejo contido. Sensações e expectativa.
+Nível 3 – Quente: Muito safada e confiante. Desejo claro sem descrição gráfica. Use promessa, controle e antecipação.
 🎯 ESTILO OBRIGATÓRIO
 Sempre 1 mensagem por resposta
 1–2 frases (raramente 3)
-Variação: ~40% respostas de 1–3 palavras, ~40% 1 frase curta (≤12 palavras), ~20% 2 frases (≤22 palavras)
 Linguagem natural e coloquial
-Emojis: 0–2, só quando fizer sentido (~40% das mensagens)
+Emojis: 0–2, só quando fizer sentido
 Não repetir começos seguidos
 Se a última mensagem terminou com pergunta → a próxima não termina com pergunta
 Use o que ele disse; faça perguntas concretas quando fizer sentido
-Apelidos: no máximo 1 por mensagem, às vezes nenhum
+Apelidos: no máximo 1 por mensagem
 💰 REGRA DE OURO (CONVERSÃO)
-Nunca entregue tudo.
-Quando o clima estiver alto:
-provoque
-pare
-crie frustração
-ofereça continuação como privacidade / ficar a sós
-Modelo mental de oferta (sem falar “pagamento”):
-“Aqui todo mundo vê só um pouquinho…
-a parte mais gostosa é só pra quem fica comigo a sós 😏”
+Nunca entregue tudo. Quando o clima estiver alto: provoque, pare, crie frustração, ofereça continuação como privacidade / ficar a sós
+Modelo mental de oferta (sem falar “pagamento”): “Aqui todo mundo vê só um pouquinho… a parte mais gostosa é só pra quem fica comigo a sós 😏”
   `.trim();
 
   const messages = [
     { role: "system", content: systemPrompt },
     ...getHistory(chatId),
-    { role: "user", content: userText }, // ← ESSA É A CORREÇÃO PRINCIPAL
+    { role: "user", content: userText },
   ];
 
   let reply;
@@ -488,7 +484,7 @@ a parte mais gostosa é só pra quem fica comigo a sós 😏”
       body: JSON.stringify({
         model: "grok-4-latest",
         messages,
-        temperature: 0.7,
+        temperature: 0.78,
         top_p: 0.9,
         max_tokens: 120,
       }),
@@ -515,8 +511,7 @@ async function gerarCheckout(chatId, planId) {
   const now = Date.now();
   const last = lastCheckoutAt.get(chatId) || 0;
   if (now - last < CHECKOUT_COOLDOWN_MS) {
-    const reply = await aiSystemReply(chatId, "GENERATING_LINK");
-    await tgSendMessage(chatId, reply);
+    await tgSendMessage(chatId, SYS_TEXT.GENERATING_LINK);
     return;
   }
 
@@ -525,7 +520,6 @@ async function gerarCheckout(chatId, planId) {
   try {
     const { checkoutUrl, plan } = await createCheckout({ chatId, planId });
     console.log("✅ checkoutUrl:", checkoutUrl);
-    console.log("✅ Checkout criado:", { chatId, planId: plan.id, checkoutUrl });
 
     let paymentText = "";
     if (plan.id === "p12h") {
@@ -545,13 +539,8 @@ async function gerarCheckout(chatId, planId) {
     console.error("❌ Erro ao gerar checkout:", err?.message || err);
     awaitingPayment.delete(chatId);
     lastCheckoutAt.delete(chatId);
-    const reply = await aiSystemReply(chatId, "PAYMENT_ERROR");
-    await tgSendMessage(chatId, reply);
+    await tgSendMessage(chatId, SYS_TEXT.PAYMENT_ERROR);
   }
-}
-
-async function cleanupOldPendings() {
-  await dbCleanupOldPendings(PENDING_TTL_MS);
 }
 
 // ========= TELEGRAM =========
@@ -776,7 +765,10 @@ app.post("/mp/webhook", async (req, res) => {
         return false;
       }
 
-      if (!(await isPremium(chatId))) {
+      const current = await dbGetPremium(chatId);
+      const active = current && Date.now() <= new Date(current.premium_until).getTime();
+
+      if (!active) {
         await dbSetPremium(
           chatId,
           Date.now() + PLANS[planId].durationMs,
@@ -798,14 +790,12 @@ app.post("/mp/webhook", async (req, res) => {
         lastCheckoutAt.delete(chatId);
         userMsgCount.delete(chatId);
 
-        const replyRaw = await aiSystemReply(chatId, "PAYMENT_SUCCESS");
-        const reply = sanitizeReply(replyRaw);
-        await tgSendMessage(chatId, reply);
-
+        await tgSendMessage(chatId, SYS_TEXT.PAYMENT_SUCCESS);
         resetInactivityTimer(chatId);
         console.log("✅ Premium ativado", { chatId, planId });
         return true;
       }
+
       return true;
     };
 
@@ -854,63 +844,11 @@ app.post("/mp/webhook", async (req, res) => {
   }
 });
 
-// ========= GROK / xAI =========
-async function fetchWithRetry(url, options, maxTries = 3) {
-  let lastError;
-  for (let attempt = 0; attempt < maxTries; attempt++) {
-    try {
-      const response = await fetch(url, options);
-      if (response.ok) return response;
-      const status = response.status;
-      if (status === 429 || status === 503) {
-        const waitMs = 800 * (attempt + 1);
-        await new Promise(r => setTimeout(r, waitMs));
-        continue;
-      }
-      const body = await response.text().catch(() => "");
-      throw new Error(`xAI HTTP ${status}: ${body}`);
-    } catch (err) {
-      lastError = err;
-      if (attempt === maxTries - 1) throw lastError;
-    }
-  }
-  throw new Error("xAI indisponível (retries esgotados)");
-}
-
-// askGrok já foi atualizado acima
-
-// ========= INATIVIDADE =========
-const inactivityTimers = new Map();
-const lastAutoMessage = new Map();
-const INACTIVITY_TIMEOUT = 60 * 60 * 1000;
-const ONE_DAY_MS = 24 * 60 * 60 * 1000;
-
-function resetInactivityTimer(chatId) {
-  if (inactivityTimers.has(chatId)) clearTimeout(inactivityTimers.get(chatId));
-
-  const last = lastAutoMessage.get(chatId) || 0;
-  if (Date.now() - last < ONE_DAY_MS) return;
-
-  const timer = setTimeout(async () => {
-    const history = getHistory(chatId);
-    const lastMsgs = history.slice(-4).map(m => m.content.toLowerCase()).join(' ');
-    let type = "INACTIVITY_SOFT";
-    if (/molhada|duro|foder|gozar|sentar|gemendo/.test(lastMsgs)) type = "INACTIVITY_HOT";
-    else if (/calorzinho|arrepio|abraço|beijo|coxa/.test(lastMsgs)) type = "INACTIVITY_WARM";
-
-    const replyRaw = await aiSystemReply(chatId, type);
-    const reply = sanitizeReply(replyRaw);
-    await tgSendMessage(chatId, reply);
-    lastAutoMessage.set(chatId, Date.now());
-    inactivityTimers.delete(chatId);
-  }, INACTIVITY_TIMEOUT);
-
-  inactivityTimers.set(chatId, timer);
-}
-
 // ========= WEBHOOK TELEGRAM =========
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
+
+  const t0 = Date.now();
 
   if (WEBHOOK_SECRET && req.get("X-Telegram-Bot-Api-Secret-Token") !== WEBHOOK_SECRET) {
     console.warn("Secret inválido");
@@ -943,7 +881,11 @@ app.post("/webhook", async (req, res) => {
     return;
   }
 
-  await cleanupOldPendings();
+  // A) Cleanup pendings raramente (não bloqueia)
+  if (Date.now() - lastPendingsCleanup > PENDINGS_CLEANUP_EVERY_MS) {
+    lastPendingsCleanup = Date.now();
+    cleanupOldPendings().catch(() => {});
+  }
 
   const msg = req.body?.message;
   if (!msg) return;
@@ -952,95 +894,95 @@ app.post("/webhook", async (req, res) => {
   const text = (msg.text || "").trim();
   if (!text) return;
 
+  tmark("Início processamento", t0);
+
+  // B) Rate limit + voice
+  if (hitRateLimit(chatId)) {
+    await tgSendMessage(chatId, "Calma comigo 😌 manda uma de cada vez.");
+    resetInactivityTimer(chatId);
+    tmark("Rate limit", t0);
+    return;
+  }
+
+  if (msg.voice || msg.audio) {
+    await tgSendMessage(chatId, SYS_TEXT.VOICE_BLOCK);
+    resetInactivityTimer(chatId);
+    tmark("Voice block", t0);
+    return;
+  }
+
+  // C) 1 query única de premium
+  const row = await dbGetPremium(chatId);
+
+  let premiumNow = false;
+  let justExpired = false;
+  let planId = null;
+
+  if (row) {
+    const untilMs = new Date(row.premium_until).getTime();
+    planId = row.plan_id;
+    if (Date.now() > untilMs) {
+      justExpired = true;
+      await dbDeletePremium(chatId);
+    } else {
+      premiumNow = true;
+    }
+  }
+
+  const mediaAllowed = premiumNow && (planId === "p48h" || planId === "p7d");
+
+  tmark("DB premium + media check", t0);
+
+  // D) Media block sem query extra
+  const wantsMedia = /foto|selfie|imagem|nude|pelada|mostra|manda foto|áudio|audio|voz|video|vídeo/i.test(text.toLowerCase());
+  if (wantsMedia && !mediaAllowed) {
+    if (awaitingPayment.get(chatId)) {
+      await tgSendMessage(chatId, SYS_TEXT.ALREADY_WAITING);
+      resetInactivityTimer(chatId);
+      tmark("Media already waiting", t0);
+      return;
+    }
+    awaitingPayment.set(chatId, true);
+    await sendPremiumOnlyNotice(chatId);
+    resetInactivityTimer(chatId);
+    tmark("Media blocked → premium notice", t0);
+    return;
+  }
+
+  // E) Expired → offer plan
+  if (justExpired) {
+    if (!awaitingPayment.get(chatId)) {
+      awaitingPayment.set(chatId, true);
+      await sendPremiumOnlyNotice(chatId);
+    }
+    resetInactivityTimer(chatId);
+    tmark("Expired → premium notice", t0);
+    return;
+  }
+
+  // F) Primeira mensagem
   if (!loggedFirstMessage.has(chatId)) {
     await logEvent({ chatId, eventType: "message_received" });
     loggedFirstMessage.add(chatId);
   }
 
-  if (hitRateLimit(chatId)) {
-    const replyRaw = await aiSystemReply(chatId, "FALLBACK", "O usuário está mandando mensagens rápido demais. Peça para ir com calma.");
-    const reply = sanitizeReply(replyRaw);
-    await tgSendMessage(chatId, reply);
-    return;
-  }
+  // G) Quick cache
+  const norm = text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  if (msg.voice || msg.audio) {
-    const replyRaw = await aiSystemReply(chatId, "VOICE_BLOCK");
-    const reply = sanitizeReply(replyRaw);
-    await tgSendMessage(chatId, reply);
+  const cached = getQuickCache(`${chatId}:${norm}`);
+  if (cached) {
+    await tgSendMessage(chatId, cached);
     resetInactivityTimer(chatId);
+    tmark("Quick cache hit", t0);
     return;
   }
 
-  const wantsMedia = /foto|selfie|imagem|nude|pelada|mostra|manda foto|áudio|audio|voz|fala comigo|me manda|video|vídeo/i.test(
-    text.toLowerCase()
-  );
-
-  if (wantsMedia) {
-    if (await hasMediaAccess(chatId)) {
-      const replyRaw = await aiSystemReply(chatId, "MEDIA_ALLOWED");
-      const reply = sanitizeReply(replyRaw);
-      await tgSendMessage(chatId, reply);
-      resetInactivityTimer(chatId);
-      return;
-    }
-
-    await logEvent({ chatId, eventType: "media_blocked" });
-
-    if (awaitingPayment.get(chatId)) {
-      const replyRaw = await aiSystemReply(chatId, "ALREADY_WAITING");
-      const reply = sanitizeReply(replyRaw);
-      await tgSendMessage(chatId, reply);
-      resetInactivityTimer(chatId);
-      return;
-    }
-
-    awaitingPayment.set(chatId, true);
-    await sendPremiumOnlyNotice(chatId);
-    resetInactivityTimer(chatId);
-    return;
-  }
-
-  console.log("🔥 UPDATE:", chatId, text);
-
-  if (text === "/start") {
-    const replyRaw = await aiSystemReply(chatId, "START");
-    const reply = sanitizeReply(replyRaw);
-    await tgSendMessage(chatId, reply);
-
-    loggedFirstMessage.delete(chatId);
-    return;
-  }
-
-  if (text === "/stop") {
-    const replyRaw = await aiSystemReply(chatId, "STOP");
-    const reply = sanitizeReply(replyRaw);
-    await tgSendMessage(chatId, reply);
-    memory.delete(chatId);
-    userMsgCount.delete(chatId);
-    awaitingPayment.delete(chatId);
-    await dbDeletePremium(chatId);
-    if (inactivityTimers.has(chatId)) {
-      clearTimeout(inactivityTimers.get(chatId));
-      inactivityTimers.delete(chatId);
-    }
-    lastAutoMessage.delete(chatId);
-    loggedFirstMessage.delete(chatId);
-    return;
-  }
-
-  await tgTyping(chatId);
-
-  if (!XAI_API_KEY) {
-    const replyRaw = await aiSystemReply(chatId, "NO_AI");
-    const reply = sanitizeReply(replyRaw);
-    await tgSendMessage(chatId, reply);
-    return;
-  }
-
-  const justExpired = await clearIfExpired(chatId);
-  const premiumNow = await isPremium(chatId);
-
+  // H) IA (só chega aqui se necessário)
+  await tgTyping(chatId); // ← movido para cá (só quando vai demorar)
   const replyRaw = await askGrok(chatId, text);
   const reply = sanitizeReply(replyRaw);
 
@@ -1049,46 +991,14 @@ app.post("/webhook", async (req, res) => {
 
   userMsgCount.set(chatId, (userMsgCount.get(chatId) || 0) + 1);
 
-  try {
-    if (premiumNow) {
-      await tgSendMessage(chatId, reply);
-      resetInactivityTimer(chatId);
-      return;
-    }
+  await tgSendMessage(chatId, reply);
+  resetInactivityTimer(chatId);
 
-    if (justExpired) {
-      if (!awaitingPayment.get(chatId)) {
-        awaitingPayment.set(chatId, true);
-        await sendPremiumOnlyNotice(chatId);
-      }
-      return;
-    }
-
-    const history = getHistory(chatId);
-    const msgCount = userMsgCount.get(chatId) || 0;
-    const lastMsgs = history.slice(-5).map(m => m.content.toLowerCase()).join(' ');
-
-    const isPaymentTime =
-      msgCount >= 10 &&
-      msgCount <= 14 &&
-      /calorzinho|coxa|abraço|beijo|tesão|gostei|molhada|duro/.test(lastMsgs);
-
-    if (isPaymentTime) {
-      if (!awaitingPayment.get(chatId)) {
-        awaitingPayment.set(chatId, true);
-        await sendPremiumOnlyNotice(chatId);
-      }
-      return;
-    }
-
-    await tgSendMessage(chatId, reply);
-    resetInactivityTimer(chatId);
-  } catch (e) {
-    console.error("Erro no webhook:", e.message);
-    const fallbackRaw = await aiSystemReply(chatId, "AI_BUSY");
-    const fallback = sanitizeReply(fallbackRaw);
-    await tgSendMessage(chatId, fallback);
+  if (norm.length <= 12) {
+    setQuickCache(`${chatId}:${norm}`, reply);
   }
+
+  tmark("Resposta IA enviada", t0);
 });
 
 // ========= START =========
